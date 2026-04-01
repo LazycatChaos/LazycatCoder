@@ -9,9 +9,11 @@ It keeps looping until the LLM responds with plain text (no tool calls),
 which means it's done working and ready to report back.
 """
 
+import concurrent.futures
 from .llm import LLM
 from .tools import ALL_TOOLS, get_tool
 from .tools.base import Tool
+from .tools.agent import AgentTool
 from .prompt import system_prompt
 from .context import ContextManager
 
@@ -30,6 +32,11 @@ class Agent:
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
         self._system = system_prompt(self.tools)
+
+        # wire up sub-agent capability
+        for t in self.tools:
+            if isinstance(t, AgentTool):
+                t._parent_agent = self
 
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages
@@ -54,34 +61,61 @@ class Agent:
                 self.messages.append(resp.message)
                 return resp.content
 
-            # tool calls -> execute each one
+            # tool calls -> execute (parallel when multiple, like Claude Code's
+            # StreamingToolExecutor which runs independent tools concurrently)
             self.messages.append(resp.message)
 
-            for tc in resp.tool_calls:
+            if len(resp.tool_calls) == 1:
+                tc = resp.tool_calls[0]
                 if on_tool:
                     on_tool(tc.name, tc.arguments)
-
-                tool = get_tool(tc.name)
-                if tool is None:
-                    result = f"Error: unknown tool '{tc.name}'"
-                else:
-                    try:
-                        result = tool.execute(**tc.arguments)
-                    except TypeError as e:
-                        result = f"Error: bad arguments for {tc.name}: {e}"
-                    except Exception as e:
-                        result = f"Error executing {tc.name}: {e}"
-
+                result = self._exec_tool(tc)
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": result,
                 })
+            else:
+                # parallel execution for multiple tool calls
+                results = self._exec_tools_parallel(resp.tool_calls, on_tool)
+                for tc, result in zip(resp.tool_calls, results):
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
 
             # compress if tool outputs are big
             self.context.maybe_compress(self.messages, self.llm)
 
         return "(reached maximum tool-call rounds)"
+
+    def _exec_tool(self, tc) -> str:
+        """Execute a single tool call, returning the result string."""
+        tool = get_tool(tc.name)
+        if tool is None:
+            return f"Error: unknown tool '{tc.name}'"
+        try:
+            return tool.execute(**tc.arguments)
+        except TypeError as e:
+            return f"Error: bad arguments for {tc.name}: {e}"
+        except Exception as e:
+            return f"Error executing {tc.name}: {e}"
+
+    def _exec_tools_parallel(self, tool_calls, on_tool=None) -> list[str]:
+        """Run multiple tool calls concurrently using threads.
+
+        This is inspired by Claude Code's StreamingToolExecutor which starts
+        executing tools while the model is still generating.  We simplify to:
+        when the model returns N tool calls at once, run them in parallel.
+        """
+        for tc in tool_calls:
+            if on_tool:
+                on_tool(tc.name, tc.arguments)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(self._exec_tool, tc) for tc in tool_calls]
+            return [f.result() for f in futures]
 
     def reset(self):
         """Clear conversation history."""

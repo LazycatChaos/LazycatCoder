@@ -13,6 +13,7 @@ from prompt_toolkit.history import FileHistory
 from .agent import Agent
 from .llm import LLM
 from .config import Config
+from .session import save_session, load_session, list_sessions
 from . import __version__
 
 console = Console()
@@ -27,6 +28,7 @@ def _parse_args():
     p.add_argument("--base-url", help="API base URL (default: $OPENAI_BASE_URL)")
     p.add_argument("--api-key", help="API key (default: $OPENAI_API_KEY)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
+    p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args()
 
@@ -67,6 +69,16 @@ def main():
         max_tokens=config.max_tokens,
     )
     agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens)
+
+    # resume saved session
+    if args.resume:
+        loaded = load_session(args.resume)
+        if loaded:
+            agent.messages, loaded_model = loaded
+            console.print(f"[green]Resumed session: {args.resume}[/green]")
+        else:
+            console.print(f"[red]Session '{args.resume}' not found.[/red]")
+            sys.exit(1)
 
     # one-shot mode
     if args.prompt:
@@ -134,6 +146,19 @@ def _repl(agent: Agent, config: Config):
                 config.model = new_model
                 console.print(f"Switched to [cyan]{new_model}[/cyan]")
             continue
+        if user_input == "/save":
+            sid = save_session(agent.messages, config.model)
+            console.print(f"[green]Session saved: {sid}[/green]")
+            console.print(f"Resume with: nanocoder -r {sid}")
+            continue
+        if user_input == "/sessions":
+            sessions = list_sessions()
+            if not sessions:
+                console.print("[dim]No saved sessions.[/dim]")
+            else:
+                for s in sessions:
+                    console.print(f"  [cyan]{s['id']}[/cyan] ({s['model']}, {s['saved_at']}) {s['preview']}")
+            continue
 
         # call the agent
         streamed: list[str] = []
@@ -165,6 +190,8 @@ def _show_help():
         "  /reset         Clear conversation history\n"
         "  /model <name>  Switch model mid-conversation\n"
         "  /tokens        Show token usage\n"
+        "  /save          Save session to disk\n"
+        "  /sessions      List saved sessions\n"
         "  quit           Exit NanoCoder",
         title="NanoCoder Help",
         border_style="dim",

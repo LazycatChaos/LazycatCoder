@@ -6,7 +6,9 @@ substring must appear exactly once in the file, which eliminates ambiguity
 and makes edits safe and reviewable.
 """
 
+import difflib
 from pathlib import Path
+
 from .base import Tool
 
 
@@ -46,7 +48,6 @@ class EditFileTool(Tool):
             occurrences = content.count(old_string)
 
             if occurrences == 0:
-                # show a snippet of the file so the LLM can retry
                 preview = content[:500] + ("..." if len(content) > 500 else "")
                 return (
                     f"Error: old_string not found in {file_path}.\n"
@@ -61,9 +62,24 @@ class EditFileTool(Tool):
             new_content = content.replace(old_string, new_string, 1)
             p.write_text(new_content)
 
-            # quick diff summary
-            old_lines = old_string.count("\n") + 1
-            new_lines = new_string.count("\n") + 1
-            return f"Edited {file_path}: replaced {old_lines} line(s) with {new_lines} line(s)"
+            # generate a unified diff so the user/LLM can see exactly what changed
+            diff = _unified_diff(content, new_content, str(p))
+            return f"Edited {file_path}\n{diff}"
         except Exception as e:
             return f"Error: {e}"
+
+
+def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
+    """Generate a compact unified diff between old and new file content."""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{filename}", tofile=f"b/{filename}",
+        n=context,
+    )
+    result = "".join(diff)
+    # truncate enormous diffs
+    if len(result) > 3000:
+        result = result[:2500] + "\n... (diff truncated)\n"
+    return result
