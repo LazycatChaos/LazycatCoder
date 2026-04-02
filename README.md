@@ -9,14 +9,14 @@
 
 **512,000 lines of TypeScript → 1,300 lines of Python.**
 
-I read every line of the leaked Claude Code source. Then I threw away everything that wasn't load-bearing and rebuilt the core in Python. This is the result: a fully functional AI coding agent that fits in your head.
+I spent a weekend reverse-engineering the leaked Claude Code source — all half a million lines. Then I stripped it down to the load-bearing walls and rebuilt them in Python. The result: **every key architectural pattern from Claude Code, in a codebase you can read in one sitting.**
 
-> *Think [nanoGPT](https://github.com/karpathy/nanoGPT) for coding agents.*
+NanoCoder is not another AI coding tool. It's a **blueprint** — the [nanoGPT](https://github.com/karpathy/nanoGPT) of coding agents. Read it, fork it, build your own.
 
 ---
 
 ```
-$ nanocoder -m deepseek-chat
+$ nanocoder -m kimi-k2.5
 
 You > read main.py and fix the broken import
 
@@ -32,22 +32,21 @@ You > read main.py and fix the broken import
 Fixed: halper → helper.
 ```
 
----
+## What You Get
 
-## Why
+Claude Code's 512K lines distilled to 7 patterns that actually matter:
 
-Claude Code only works with Anthropic's API. Its source is 512K lines you can't modify. And every other "alternative" is either a 100K-line project you can't read, or a wrapper with no real architecture.
+| Pattern | Claude Code | NanoCoder |
+|---|---|---|
+| Search-and-replace editing (unique match + diff) | FileEditTool | `tools/edit.py` — 70 lines |
+| Parallel tool execution | StreamingToolExecutor (530 lines) | `agent.py` — ThreadPool |
+| 3-layer context compression | HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE | `context.py` — 145 lines |
+| Sub-agent with isolated context | AgentTool (1,397 lines) | `tools/agent.py` — 50 lines |
+| Dangerous command blocking | BashTool (1,143 lines) | `tools/bash.py` — 95 lines |
+| Session persistence | QueryEngine (1,295 lines) | `session.py` — 65 lines |
+| Dynamic system prompt | prompts.ts (914 lines) | `prompt.py` — 35 lines |
 
-NanoCoder is **1,300 lines** with every key design pattern from Claude Code:
-
-- **Search-and-replace editing** — unique match required, unified diff output. No more editing the wrong line.
-- **Parallel tool execution** — ThreadPool runs independent tools concurrently. Same idea as Claude Code's StreamingToolExecutor.
-- **3-layer context compression** — snip tool outputs → LLM summarize → hard collapse. Mirrors HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE.
-- **Sub-agent spawning** — delegate complex sub-tasks to agents with isolated context.
-- **Dangerous command blocking** — `rm -rf /`, fork bombs, `curl | bash`.
-- **Working directory tracking** — `cd` in bash actually works across commands.
-- **API retry with backoff** — 429, timeout, 5xx handled automatically.
-- **Session persistence** — save/resume conversations.
+Every pattern is a real, runnable implementation — not a diagram or a blog post.
 
 ## Install
 
@@ -55,7 +54,29 @@ NanoCoder is **1,300 lines** with every key design pattern from Claude Code:
 pip install nanocoder
 ```
 
+### Kimi K2.5 (recommended — strong coding, 128K context)
+
 ```bash
+export OPENAI_API_KEY=your-key
+export OPENAI_BASE_URL=https://api.moonshot.cn/v1
+nanocoder -m kimi-k2.5
+```
+
+### Claude (via OpenRouter)
+
+```bash
+export OPENAI_API_KEY=your-openrouter-key
+export OPENAI_BASE_URL=https://openrouter.ai/api/v1
+nanocoder -m anthropic/claude-sonnet-4
+```
+
+### More providers
+
+```bash
+# OpenAI
+export OPENAI_API_KEY=sk-...
+nanocoder -m gpt-4o
+
 # DeepSeek
 export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com
 nanocoder -m deepseek-chat
@@ -64,21 +85,19 @@ nanocoder -m deepseek-chat
 export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 nanocoder -m qwen-plus
 
-# Ollama (local)
+# Local (Ollama)
 export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1
 nanocoder -m qwen2.5-coder
 
-# OpenAI
-export OPENAI_API_KEY=sk-...
-nanocoder
-
-# One-shot
+# One-shot mode
 nanocoder -p "add error handling to parse_config()"
 ```
 
-Works with **any OpenAI-compatible API**: OpenAI, DeepSeek, Qwen, Kimi, GLM, Ollama, vLLM, OpenRouter, Together AI.
+Works with **any OpenAI-compatible API**: Kimi, Claude (via OpenRouter), OpenAI, DeepSeek, Qwen, GLM, Ollama, vLLM, Together AI.
 
 ## Architecture
+
+The whole thing fits in your head:
 
 ```
 nanocoder/
@@ -104,12 +123,12 @@ nanocoder/
 ```python
 from nanocoder import Agent, LLM
 
-llm = LLM(model="deepseek-chat", api_key="sk-...", base_url="https://api.deepseek.com")
+llm = LLM(model="kimi-k2.5", api_key="your-key", base_url="https://api.moonshot.cn/v1")
 agent = Agent(llm=llm)
-response = agent.chat("find all TODO comments in this project")
+response = agent.chat("find all TODO comments in this project and list them")
 ```
 
-## Add Your Own Tools
+## Add Your Own Tools (~20 lines)
 
 ```python
 from nanocoder.tools.base import Tool
@@ -127,11 +146,11 @@ class HttpTool(Tool):
 ## Commands
 
 ```
-/model <name>    Switch model
-/compact         Compress context
+/model <name>    Switch model mid-conversation
+/compact         Compress context (like Claude Code's /compact)
 /tokens          Token usage
-/save            Save session
-/sessions        List sessions
+/save            Save session to disk
+/sessions        List saved sessions
 /reset           Clear history
 quit             Exit
 ```
@@ -147,14 +166,14 @@ quit             Exit
 
 ## The Deep Dive
 
-I wrote [7 articles](article/) breaking down Claude Code's architecture in detail — the agent loop, tool system, context compression, streaming executor, multi-agent, and hidden features behind 44 feature flags. If you want to understand *why* NanoCoder is built this way, start there.
+I wrote [7 articles](article/) breaking down Claude Code's architecture — the agent loop, tool system, context compression, streaming executor, multi-agent, and 44 hidden feature flags. If you want to understand *why* NanoCoder is designed this way, start there.
 
 ## License
 
-MIT. Fork it, learn from it, ship something better.
+MIT. Fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 
 Built by **[Yufeng He](https://github.com/he-yufeng)** · Agentic AI Researcher @ Moonshot AI (Kimi)
 
-[Claude Code Source Analysis — 170K+ reads on Zhihu](https://zhuanlan.zhihu.com/p/1898797658343862272)
+[Claude Code Source Analysis — 170K+ reads, 6000 bookmarks on Zhihu](https://zhuanlan.zhihu.com/p/1898797658343862272)

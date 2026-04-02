@@ -9,14 +9,14 @@
 
 **51万行 TypeScript → 1300 行 Python。**
 
-我通读了 Claude Code 泄露的全部源码，然后把所有不承重的部分扔掉，用 Python 重写了核心。这就是结果：一个装得进你脑子里的 AI 编程 Agent。
+我花了一个周末逆向 Claude Code 泄露的全部源码，然后把不承重的部分全扔掉，用 Python 重建了核心。结果：**Claude Code 的每一个关键架构模式，浓缩在一个下午能读完的代码库里。**
 
-> *可以理解为编程 Agent 领域的 [nanoGPT](https://github.com/karpathy/nanoGPT)。*
+NanoCoder 不是又一个 AI 编程工具。它是一份**蓝图**，编程 Agent 领域的 [nanoGPT](https://github.com/karpathy/nanoGPT)。读懂它，fork 它，然后造你自己的。
 
 ---
 
 ```
-$ nanocoder -m deepseek-chat
+$ nanocoder -m kimi-k2.5
 
 You > 读一下 main.py，修掉拼错的 import
 
@@ -32,22 +32,21 @@ You > 读一下 main.py，修掉拼错的 import
 修好了：halper → helper。
 ```
 
----
+## 你能得到什么
 
-## 为什么做这个
+Claude Code 51 万行源码提炼出来的 7 个核心模式：
 
-Claude Code 只支持 Anthropic API。源码 51 万行你改不了。其他"替代品"要么是 10 万行你读不完的大工程，要么是套壳没真正的架构。
+| 设计模式 | Claude Code | NanoCoder |
+|---|---|---|
+| 搜索替换编辑（唯一匹配 + diff） | FileEditTool | `tools/edit.py` — 70 行 |
+| 并行工具执行 | StreamingToolExecutor（530行） | `agent.py` — ThreadPool |
+| 三层上下文压缩 | HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE | `context.py` — 145 行 |
+| 子代理隔离上下文 | AgentTool（1,397行） | `tools/agent.py` — 50 行 |
+| 危险命令拦截 | BashTool（1,143行） | `tools/bash.py` — 95 行 |
+| 会话持久化 | QueryEngine（1,295行） | `session.py` — 65 行 |
+| 动态系统提示词 | prompts.ts（914行） | `prompt.py` — 35 行 |
 
-NanoCoder 是 **1300 行**，Claude Code 每个关键设计模式都有：
-
-- **搜索替换编辑** — 必须唯一匹配，编辑后输出 unified diff。不会改错行。
-- **并行工具执行** — 线程池同时跑多个工具。对标 Claude Code 的 StreamingToolExecutor。
-- **三层上下文压缩** — 裁工具输出 → LLM 摘要 → 硬压缩。对标 HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE。
-- **子代理生成** — 复杂子任务交给独立 Agent，各有自己的上下文。
-- **危险命令拦截** — `rm -rf /`、fork bomb、`curl | bash`。
-- **工作目录追踪** — bash 里 `cd` 之后下一条命令确实在新目录里。
-- **API 重试** — 429、超时、5xx 自动指数退避重试。
-- **会话持久化** — 保存和恢复对话。
+每个模式都是可运行的实现，不是流程图，不是博客文章。
 
 ## 安装
 
@@ -55,8 +54,30 @@ NanoCoder 是 **1300 行**，Claude Code 每个关键设计模式都有：
 pip install nanocoder
 ```
 
+### Kimi K2.5（推荐，代码能力强，128K 上下文）
+
 ```bash
-# DeepSeek（国内推荐）
+export OPENAI_API_KEY=你的key
+export OPENAI_BASE_URL=https://api.moonshot.cn/v1
+nanocoder -m kimi-k2.5
+```
+
+### Claude（通过 OpenRouter）
+
+```bash
+export OPENAI_API_KEY=你的openrouter-key
+export OPENAI_BASE_URL=https://openrouter.ai/api/v1
+nanocoder -m anthropic/claude-sonnet-4
+```
+
+### 更多模型
+
+```bash
+# OpenAI
+export OPENAI_API_KEY=sk-...
+nanocoder -m gpt-4o
+
+# DeepSeek
 export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com
 nanocoder -m deepseek-chat
 
@@ -64,25 +85,19 @@ nanocoder -m deepseek-chat
 export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 nanocoder -m qwen-plus
 
-# Kimi（月之暗面）
-export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.moonshot.cn/v1
-nanocoder -m moonshot-v1-128k
-
-# Ollama（本地）
+# Ollama（本地部署）
 export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1
 nanocoder -m qwen2.5-coder
-
-# OpenAI
-export OPENAI_API_KEY=sk-...
-nanocoder
 
 # 单次模式
 nanocoder -p "给 parse_config() 加上错误处理"
 ```
 
-支持**任何 OpenAI 兼容 API**：OpenAI、DeepSeek、Qwen、Kimi、GLM、Ollama、vLLM、OpenRouter、Together AI。
+支持**任何 OpenAI 兼容 API**：Kimi、Claude（via OpenRouter）、OpenAI、DeepSeek、Qwen、GLM、Ollama、vLLM、Together AI。
 
 ## 架构
+
+整个项目一目了然：
 
 ```
 nanocoder/
@@ -108,12 +123,12 @@ nanocoder/
 ```python
 from nanocoder import Agent, LLM
 
-llm = LLM(model="deepseek-chat", api_key="sk-...", base_url="https://api.deepseek.com")
+llm = LLM(model="kimi-k2.5", api_key="your-key", base_url="https://api.moonshot.cn/v1")
 agent = Agent(llm=llm)
-response = agent.chat("找出项目里所有 TODO 注释")
+response = agent.chat("找出项目里所有 TODO 注释并列出来")
 ```
 
-## 加自定义工具
+## 加自定义工具（约 20 行）
 
 ```python
 from nanocoder.tools.base import Tool
@@ -132,7 +147,7 @@ class HttpTool(Tool):
 
 ```
 /model <名称>    切换模型
-/compact         压缩上下文
+/compact         压缩上下文（对标 Claude Code 的 /compact）
 /tokens          查看 token 用量
 /save            保存会话
 /sessions        列出已保存的会话
