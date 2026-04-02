@@ -40,6 +40,8 @@ class GrepTool(Tool):
             return f"Invalid regex: {e}"
 
         base = Path(path).expanduser().resolve()
+        if not base.exists():
+            return f"Error: {path} not found"
 
         if base.is_file():
             files = [base]

@@ -1,178 +1,135 @@
 # NanoCoder
 
-**The entire essence of an AI coding agent, in ~1300 lines of Python.**
+**512,000 lines of TypeScript → 1,300 lines of Python.**
 
-NanoCoder distills the core architecture of production AI coding agents (like Claude Code) into a minimal, hackable, and fully functional implementation. Think of it as **nanoGPT for coding agents** — small enough to read in one sitting, powerful enough to actually use.
+I spent a weekend reading through the leaked Claude Code source — all half a million lines of it. Somewhere around 3 AM, staring at `StreamingToolExecutor.ts` and its 530-line parallel tool orchestration system, I thought: the core ideas here are brilliant, but you shouldn't need to reverse-engineer a proprietary codebase to understand them.
 
-> I analyzed 512,000 lines of leaked Claude Code source, extracted the key architectural patterns, and reimplemented them in ~1,300 lines of clean Python. This is the result.
+So I rebuilt the essential architecture from scratch. **NanoCoder is what's left when you strip away everything that isn't load-bearing.** Every file fits on one screen. Every design decision comes from a battle-tested production system.
 
-[English](README.md) | [中文](README_CN.md)
+[English](README.md) | [中文](README_CN.md) | [Claude Code Source Guide (16-part series)](article/)
 
-## Why NanoCoder?
+## What Can It Actually Do?
 
-|  | Claude Code | Claw-Code | NanoCoder |
-|---|---|---|---|
-| Language | TypeScript (512K LoC) | Python + Rust | **Python (~1,300 LoC)** |
-| LLM Support | Anthropic only | Multi-provider | **Any OpenAI-compatible API** |
-| Can you read the full source? | No (proprietary) | Difficult (huge codebase) | **Yes, in one afternoon** |
-| Designed for | End users | End users | **Developers who want to build their own** |
-| Hackability | Closed source | Complex architecture | **Fork and build in minutes** |
+```
+You > read main.py and fix the broken import
 
-NanoCoder is **not** trying to replace Claude Code. It's a **reference implementation** and **starting point** for developers who want to understand how AI coding agents work and build their own.
+> read_file(file_path='main.py')
+> edit_file(file_path='main.py', old_string='from utils import halper', new_string='from utils import helper')
+--- a/main.py
++++ b/main.py
+@@ -1,4 +1,4 @@
+-from utils import halper
++from utils import helper
 
-## Features
+Fixed the typo: `halper` → `helper`.
+```
 
-Every key architectural pattern from Claude Code, distilled:
+It reads your code, makes targeted edits (showing you exactly what changed), runs commands, searches your codebase — the same workflow as Claude Code, but with **any LLM you want**.
 
-- **Agentic tool loop** — LLM calls tools, observes results, decides next step, repeats until done
-- **7 built-in tools** — bash, read_file, write_file, edit_file, glob, grep, **agent** (sub-agents)
-- **Search-and-replace editing** — the key innovation that makes LLM code edits reliable (exact match + **unified diff output**)
-- **Sub-agent spawning** — delegate complex sub-tasks to independent agents with isolated context (Claude Code's AgentTool)
-- **Parallel tool execution** — multiple tool calls run concurrently via ThreadPool (inspired by StreamingToolExecutor)
-- **3-layer context compression** — tool output snipping → LLM summarization → hard collapse (mirrors Claude Code's HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE)
-- **Dangerous command detection** — blocks `rm -rf /`, fork bombs, `curl | bash`, etc.
-- **Streaming output** — tokens appear in real-time as the model generates
-- **Session persistence** — save/resume conversations across sessions
-- **Any LLM provider** — OpenAI, DeepSeek, Qwen, Kimi, GLM, Ollama, or any OpenAI-compatible endpoint
-- **Interactive REPL** — command history, model switching, token tracking
-- **One-shot mode** — pipe tasks via `nanocoder -p "fix the bug in main.py"`
+## Why This Exists
+
+Claude Code is great, but:
+
+1. **It only works with Anthropic's API.** If you're using DeepSeek, Qwen, Kimi, or a local model — you're out of luck.
+2. **The source is 512,000 lines of TypeScript.** Even with the leak, understanding how it *actually works* requires serious archaeology.
+3. **You can't hack on it.** Want to add a custom tool? Change the agent loop? Good luck modifying a proprietary codebase you're not supposed to have.
+
+NanoCoder fixes all three: it's **1,300 lines** you can read in an afternoon, it works with **any OpenAI-compatible API**, and it's MIT-licensed — fork it, break it, ship something new.
 
 ## Quick Start
 
 ```bash
 pip install nanocoder
+```
 
+Pick your model:
+
+```bash
 # OpenAI
 export OPENAI_API_KEY=sk-...
 nanocoder
 
-# DeepSeek
-export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com
+# DeepSeek (recommended for Chinese developers)
+export OPENAI_API_KEY=sk-...
+export OPENAI_BASE_URL=https://api.deepseek.com
 nanocoder -m deepseek-chat
 
-# Qwen (via DashScope)
-export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-nanocoder -m qwen-plus
-
-# Ollama (local)
-export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1
+# Local model via Ollama
+export OPENAI_API_KEY=ollama
+export OPENAI_BASE_URL=http://localhost:11434/v1
 nanocoder -m qwen2.5-coder
+
+# One-shot mode (no REPL)
+nanocoder -p "add error handling to parse_config()"
 ```
 
-## Supported LLM Providers
+Works with any OpenAI-compatible provider: **OpenAI, DeepSeek, Qwen, Kimi, Zhipu GLM, Ollama, vLLM, OpenRouter, Together AI** — if it speaks the OpenAI chat API, it works.
 
-NanoCoder works with **any OpenAI-compatible API**. Here are some popular ones:
+## What's Inside
 
-| Provider | Base URL | Example Model |
-|---|---|---|
-| OpenAI | *(default)* | `gpt-4o`, `gpt-4o-mini` |
-| DeepSeek | `https://api.deepseek.com` | `deepseek-chat`, `deepseek-coder` |
-| Qwen (Alibaba) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`, `qwen-max` |
-| Kimi (Moonshot) | `https://api.moonshot.cn/v1` | `moonshot-v1-128k` |
-| GLM (Zhipu) | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
-| Ollama | `http://localhost:11434/v1` | `qwen2.5-coder`, `llama3` |
-| vLLM | `http://localhost:8000/v1` | *(your served model)* |
-| OpenRouter | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4` |
-| Together AI | `https://api.together.xyz/v1` | `meta-llama/Llama-3-70b` |
-
-## Architecture
-
-The entire codebase fits in your head:
+The whole thing fits in your head:
 
 ```
 nanocoder/
-├── cli.py          # REPL interface & arg parsing         (~160 lines)
-├── agent.py        # Core agent loop + parallel exec      (~110 lines)
-├── llm.py          # OpenAI-compatible streaming client    (~115 lines)
-├── context.py      # 3-layer context compression           (~145 lines)
-├── session.py      # Save/resume conversations             (~65 lines)
-├── prompt.py       # System prompt generation              (~35 lines)
-├── config.py       # Environment-based configuration       (~30 lines)
+├── cli.py          REPL + arg parsing
+├── agent.py        The agent loop (+ parallel tool execution)
+├── llm.py          Streaming OpenAI-compatible client
+├── context.py      3-layer context compression
+├── session.py      Save/resume conversations
+├── prompt.py       System prompt
+├── config.py       Env-based config
 └── tools/
-    ├── base.py     # Tool base class                       (~20 lines)
-    ├── bash.py     # Shell execution + safety checks       (~80 lines)
-    ├── read.py     # File reading with line numbers        (~40 lines)
-    ├── write.py    # File creation/overwrite               (~30 lines)
-    ├── edit.py     # Search-and-replace + unified diff     (~70 lines)
-    ├── glob_tool.py # File pattern matching                (~35 lines)
-    ├── grep.py     # Regex content search                  (~60 lines)
-    └── agent.py    # Sub-agent spawning                    (~50 lines)
+    ├── bash.py     Shell execution + dangerous command blocking
+    ├── read.py     File reading with line numbers
+    ├── write.py    File creation
+    ├── edit.py     Search-and-replace + unified diff
+    ├── glob_tool.py  File pattern matching
+    ├── grep.py     Regex content search
+    └── agent.py    Sub-agent spawning
 ```
 
-### How the Agent Loop Works
+### The Key Ideas (from Claude Code)
 
-```
-User input
-    │
-    ▼
-┌─────────────────────────────┐
-│  Build messages              │
-│  (system prompt + history)   │
-└──────────┬──────────────────┘
-           │
-           ▼
-┌─────────────────────────────┐
-│  Call LLM (streaming)        │◄──────────────┐
-│  with tool definitions       │               │
-└──────────┬──────────────────┘               │
-           │                                   │
-     ┌─────┴─────┐                            │
-     │           │                             │
-  text?     tool calls?                        │
-     │           │                             │
-     ▼           ▼                             │
-  Return    Execute each tool                  │
-  to user   Append results to history ─────────┘
-```
+These are the patterns I consider most important after reading the full source. NanoCoder implements all of them:
 
-This is the same fundamental loop used by Claude Code, ChatGPT, and every other agentic coding assistant. The difference is that here you can read and modify every piece of it.
+**Search-and-replace editing.** Claude Code doesn't do line-number patches or whole-file rewrites. Instead, the LLM specifies an *exact substring* to find and its replacement. The substring must be unique in the file. This one constraint eliminates an entire class of editing bugs — no more "edited the wrong occurrence" or "line numbers shifted." NanoCoder's implementation shows a unified diff after every edit so you can see exactly what changed.
 
-### Key Design Decisions (from Claude Code)
+**The agentic tool loop.** User speaks → LLM responds with tool calls → tools execute → results go back to LLM → repeat until the LLM responds with text. Simple on paper, but the devil is in the details: what happens when there are 8 tool calls at once? (Parallel execution via ThreadPool.) What happens when context fills up? (3-layer compression.) What about a task too complex for one context window? (Sub-agent spawning.)
 
-1. **Search-and-replace editing** (`edit_file`): Instead of line-number patches or whole-file rewrites, the LLM specifies an exact substring to find and replace. The substring must be unique in the file, eliminating edit ambiguity. Returns a unified diff so you can see exactly what changed. This is Claude Code's most important innovation for reliable code editing.
+**3-layer context compression.** Claude Code uses a 4-tier system (HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE → Autocompact). NanoCoder implements 3 of those: first snip verbose tool outputs to head+tail, then LLM-summarize old conversation turns, finally hard-collapse as a last resort. This means you can work on long tasks without hitting context limits.
 
-2. **Sub-agent spawning** (`agent`): For complex sub-tasks, spawn an independent agent with its own conversation history. This prevents context pollution and enables divide-and-conquer workflows. Claude Code's AgentTool is 1,397 lines; NanoCoder's is 50.
+**Sub-agent delegation.** Claude Code's AgentTool (1,397 lines) spawns independent agents for complex sub-tasks, each with its own context window. NanoCoder does the same in 50 lines — `agent` tool creates a fresh Agent, runs the task, returns the summary.
 
-3. **Parallel tool execution**: When the LLM returns multiple tool calls in one response, NanoCoder executes them concurrently using a thread pool. This mirrors Claude Code's StreamingToolExecutor (530 lines) which starts executing tools while the model is still generating.
+**Dangerous command detection.** `rm -rf /`, fork bombs, `curl | bash` — blocked before they execute. Claude Code's BashTool is 1,143 lines of safety checks; NanoCoder implements the essential patterns.
 
-4. **3-layer context compression**: Mirrors Claude Code's multi-layer strategy (HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE):
-   - Layer 1: Snip verbose tool outputs to head+tail
-   - Layer 2: LLM-powered summarization of old conversation turns
-   - Layer 3: Hard collapse when nearing the limit
+## Extending It
 
-5. **Dangerous command detection**: The bash tool checks commands against known destructive patterns (`rm -rf /`, fork bombs, `curl | bash`) before execution. Claude Code's BashTool (1,143 lines) has extensive safety checks; NanoCoder implements the essential ones.
-
-6. **Read-before-edit discipline**: The system prompt instructs the LLM to always read a file before modifying it, preventing blind edits.
-
-7. **Tool output truncation**: Very long command outputs are truncated preserving head + tail (the most useful parts), preventing context window waste.
-
-## Extending NanoCoder
-
-Adding a new tool takes ~20 lines:
+Adding a tool is ~20 lines:
 
 ```python
-# nanocoder/tools/my_tool.py
-from .base import Tool
+from nanocoder.tools.base import Tool
 
-class MyTool(Tool):
-    name = "my_tool"
-    description = "Does something useful."
+class HttpTool(Tool):
+    name = "http"
+    description = "Make an HTTP request."
     parameters = {
         "type": "object",
         "properties": {
-            "arg1": {"type": "string", "description": "..."},
+            "url": {"type": "string", "description": "URL to fetch"},
+            "method": {"type": "string", "description": "HTTP method", "default": "GET"},
         },
-        "required": ["arg1"],
+        "required": ["url"],
     }
 
-    def execute(self, arg1: str) -> str:
-        # your logic here
-        return "result"
+    def execute(self, url: str, method: str = "GET") -> str:
+        import urllib.request
+        resp = urllib.request.urlopen(url)
+        return resp.read().decode()[:5000]
 ```
 
-Then register it in `tools/__init__.py`. That's it.
+Register in `tools/__init__.py`, done.
 
-You can also use NanoCoder as a library:
+Or use it as a library:
 
 ```python
 from nanocoder.agent import Agent
@@ -180,63 +137,39 @@ from nanocoder.llm import LLM
 
 llm = LLM(model="deepseek-chat", api_key="sk-...", base_url="https://api.deepseek.com")
 agent = Agent(llm=llm)
-response = agent.chat("Read main.py and add error handling to the parse function")
-print(response)
+response = agent.chat("find all TODO comments in this project and list them")
 ```
-
-## Configuration
-
-All config is via environment variables (no config files to manage):
-
-| Variable | Default | Description |
-|---|---|---|
-| `OPENAI_API_KEY` | *(required)* | API key for your LLM provider |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API endpoint |
-| `NANOCODER_MODEL` | `gpt-4o` | Model name |
-| `NANOCODER_MAX_TOKENS` | `4096` | Max tokens per response |
-| `NANOCODER_TEMPERATURE` | `0` | Sampling temperature |
-| `NANOCODER_MAX_CONTEXT` | `128000` | Context window size |
 
 ## REPL Commands
 
-| Command | Description |
+| Command | What it does |
 |---|---|
-| `/help` | Show available commands |
-| `/reset` | Clear conversation history |
 | `/model <name>` | Switch model mid-conversation |
-| `/tokens` | Show token usage for this session |
+| `/tokens` | Show token usage this session |
 | `/save` | Save conversation to disk |
 | `/sessions` | List saved sessions |
-| `quit` | Exit NanoCoder |
+| `/reset` | Clear conversation history |
+| `quit` | Exit |
 
-Resume a saved session: `nanocoder -r <session_id>`
+Resume a session: `nanocoder -r <session_id>`
 
-## Philosophy
+## How It Compares
 
-NanoCoder follows the **nanoGPT philosophy**: minimize complexity, maximize understanding.
+|  | Claude Code | Claw-Code | NanoCoder |
+|---|---|---|---|
+| Code | 512K lines TS (proprietary) | 100K+ lines Python/Rust | **1,300 lines Python** |
+| Models | Anthropic only | Multi-provider | **Any OpenAI-compatible** |
+| Can you read all of it? | No | Not easily | **Yes, in an afternoon** |
+| Purpose | Use it | Use it | **Understand it, then build yours** |
 
-- Every file has a single responsibility
-- No abstractions for the sake of abstractions
-- Comments explain *why*, not *what*
-- The whole thing is meant to be forked and modified
+## The Source Guide
 
-If Claude Code is a car, NanoCoder is the engine on a test bench. You can see every moving part, understand how it works, and swap components to build your own vehicle.
-
-## Related
-
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Anthropic's official coding agent (proprietary)
-- [Claw-Code](https://github.com/instructkr/claw-code) — Full-featured clean-room reimplementation in Python/Rust
-- [nanoGPT](https://github.com/karpathy/nanoGPT) — The inspiration for this project's philosophy
-- [Aider](https://github.com/paul-gauthier/aider) — Established Python AI pair programming tool
+I also wrote a [16-part deep dive](article/) into Claude Code's architecture — covering everything from the agent loop to the permission system to the unreleased features hidden behind feature flags. If you want to understand *why* NanoCoder is built the way it is, start there.
 
 ## License
 
-MIT License. Fork it, ship it, build something great.
+MIT. Fork it, learn from it, build something better.
 
-## Author
+---
 
-**Yufeng He** ([@he-yufeng](https://github.com/he-yufeng))
-
-- Agentic AI Researcher @ Moonshot AI (Kimi)
-- MS CS @ HKU | Former @ Baidu, Kuaishou
-- [Zhihu article: Claude Code Source Analysis (170K+ reads)](https://zhuanlan.zhihu.com/p/1898797658343862272)
+Built by [Yufeng He](https://github.com/he-yufeng) · Agentic AI Researcher @ Moonshot AI (Kimi) · [Claude Code source analysis (170K+ reads on Zhihu)](https://zhuanlan.zhihu.com/p/1898797658343862272)

@@ -18,7 +18,7 @@ _DANGEROUS_PATTERNS = [
     (r"\bdd\s+.*of=/dev/", "raw disk write"),
     (r">\s*/dev/sd[a-z]", "overwrite block device"),
     (r"\bchmod\s+(-R\s+)?777\s+/", "chmod 777 on root"),
-    (r":(){ :\|:& };:", "fork bomb"),
+    (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
     (r"\bcurl\b.*\|\s*(sudo\s+)?bash", "pipe curl to bash"),
     (r"\bwget\b.*\|\s*(sudo\s+)?bash", "pipe wget to bash"),
 ]
