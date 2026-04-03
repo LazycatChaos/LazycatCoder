@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/he-yufeng/NanoCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/NanoCoder/actions)
 
-**51万行 TypeScript → 1300 行 Python。**
+**51万行 TypeScript → 950 行 Python。**
 
 我逆向了 Claude Code 泄露的全部源码，然后把不承重的部分全扔掉，用 Python 重建了核心。成果：**Claude Code 的每一个关键架构模式，浓缩在一个下午能读完的代码库里。**
 
