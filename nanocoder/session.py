@@ -37,7 +37,7 @@ def load_session(session_id: str) -> tuple[list[dict], str] | None:
     if not path.exists():
         return None
 
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     return data["messages"], data["model"]
 
 

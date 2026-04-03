@@ -145,7 +145,7 @@ class Agent:
             if self.debug:
                 from rich.console import Console
                 console = Console()
-                result_preview = result[:300] + "..." if len(result) > 300 else result
+                result_preview = result[:500] + "..." if len(result) > 500 else result
                 # Replace newlines for cleaner display
                 result_preview = result_preview.replace('\n', '\\n')
                 console.print(f"[dim]Result ({len(result)} chars):[/dim] {result_preview}")
