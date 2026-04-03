@@ -31,6 +31,7 @@ def _parse_args():
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
     p.add_argument("--debug", action="store_true", help="Enable debug mode with verbose output")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
+    p.add_argument("-w", "--workdir", help="Working directory (default: current directory)")
     return p.parse_args()
 
 
@@ -69,7 +70,15 @@ def main():
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )
-    agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens, debug=args.debug)
+    
+    # Determine working directory: CLI arg > current directory
+    workdir = args.workdir if args.workdir else os.getcwd()
+    agent = Agent(
+        llm=llm,
+        max_context_tokens=config.max_context_tokens,
+        debug=args.debug,
+        workdir=workdir,
+    )
 
     # resume saved session
     if args.resume:
@@ -212,6 +221,6 @@ def _show_help():
     ))
 
 
-def _brief(kwargs: dict, maxlen: int = 80) -> str:
-    s = ", ".join(f"{k}={repr(v)[:40]}" for k, v in kwargs.items())
+def _brief(kwargs: dict, maxlen: int = 300) -> str:
+    s = ", ".join(f"{k}={repr(v)[:100]}" for k, v in kwargs.items())
     return s[:maxlen] + ("..." if len(s) > maxlen else "")

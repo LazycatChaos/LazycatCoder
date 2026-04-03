@@ -14,6 +14,7 @@ from typing import Optional
 from .base import Tool, ValidationResult, PermissionDecision
 
 # track cwd across commands (Claude Code does this too)
+# This is used when no explicit workdir is set on the tool
 _cwd: Optional[str] = None
 
 # patterns that could wreck the filesystem or leak secrets
@@ -39,6 +40,9 @@ class BashTool(Tool):
     )
 
     search_hint = "run shell commands"
+    
+    # Optional working directory (set by Agent if specified)
+    workdir: Optional[str] = None
 
     @property
     def is_read_only(self) -> bool:
@@ -92,8 +96,8 @@ class BashTool(Tool):
         if not validation.valid:
             return validation.message
 
-        # use tracked working directory
-        cwd = _cwd or os.getcwd()
+        # use working directory: explicit workdir > tracked cwd > current directory
+        cwd = self.workdir or _cwd or os.getcwd()
 
         # Windows compatibility: use bash -c "command" for WSL/Git Bash
         if os.name == "nt":  # Windows

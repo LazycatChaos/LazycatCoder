@@ -75,6 +75,9 @@ class LLM:
         if tools:
             params["tools"] = tools
 
+        # Log before sending request to avoid confusion during long waits
+        print(f"📤 Sending request to {self.model}...")
+
         # stream_options is an OpenAI extension; not all providers support it
         try:
             params["stream_options"] = {"include_usage": True}

@@ -18,6 +18,7 @@ Enhanced features (inspired by Claude Code QueryEngine):
 import concurrent.futures
 import asyncio
 import time
+import os
 from typing import Optional, Callable
 from .llm import LLM
 from .tools import ALL_TOOLS, get_tool
@@ -38,6 +39,7 @@ class Agent:
         debug: bool = False,
         session_id: Optional[str] = None,
         auto_save: bool = True,
+        workdir: Optional[str] = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -46,6 +48,9 @@ class Agent:
         self.max_rounds = max_rounds
         self.debug = debug
         self._system = system_prompt(self.tools)
+        
+        # Working directory (default: current directory)
+        self.workdir = workdir if workdir is not None else os.getcwd()
         
         # Session management (Claude Code style real-time persistence)
         self.session_id = session_id
@@ -65,6 +70,11 @@ class Agent:
         for t in self.tools:
             if isinstance(t, AgentTool):
                 t._parent_agent = self
+        
+        # Pass workdir to tools that support it (e.g., BashTool)
+        for t in self.tools:
+            if hasattr(t, 'workdir'):
+                t.workdir = self.workdir
 
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages
@@ -118,7 +128,7 @@ class Agent:
                     from rich.console import Console
                     console = Console()
                     content_preview = resp.content[:200] + "..." if len(resp.content) > 200 else resp.content
-                    console.print(f"[bold green]>>> LLM responded with text[/bold green] [dim]({len(resp.content)} chars)[/dim]")
+                    console.print(f"\n[bold green]>>> LLM responded with text[/bold green] [dim]({len(resp.content)} chars)[/dim]")
                     console.print(f"[dim]{content_preview}[/dim]")
                 
                 # Record assistant response (non-critical, lazy flush)
