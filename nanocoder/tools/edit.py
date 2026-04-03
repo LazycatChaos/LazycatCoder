@@ -54,8 +54,21 @@ class EditFileTool(Tool):
                     f"File starts with:\n{preview}"
                 )
             if occurrences > 1:
+                # find line numbers where old_string appears
+                lines = content.splitlines()
+                match_lines = []
+                for i, line in enumerate(lines, start=1):
+                    if old_string in line:
+                        match_lines.append(i)
+                        if len(match_lines) >= 10:  # cap at 10 to avoid huge error messages
+                            break
+                
+                line_info = f" at lines: {match_lines[:10]}"
+                if len(match_lines) >= 10 and occurrences > 10:
+                    line_info += f" (and {occurrences - 10} more)"
+                
                 return (
-                    f"Error: old_string appears {occurrences} times in {file_path}. "
+                    f"Error: old_string appears {occurrences} times in {file_path}{line_info}. "
                     f"Include more surrounding lines to make it unique."
                 )
 
