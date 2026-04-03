@@ -14,6 +14,11 @@ class GrepTool(Tool):
         "Search file contents with regex. "
         "Returns matching lines with file path and line number."
     )
+    
+    @property
+    def is_read_only(self) -> bool:
+        return True
+    
     parameters = {
         "type": "object",
         "properties": {

@@ -35,6 +35,12 @@ class BashTool(Tool):
         "Execute a shell command. Returns stdout, stderr, and exit code. "
         "Use this for running tests, installing packages, git operations, etc."
     )
+
+    @property
+    def is_read_only(self) -> bool:
+        # Conservative: bash can modify state, so default to False
+        return False
+
     parameters = {
         "type": "object",
         "properties": {
@@ -66,6 +72,7 @@ class BashTool(Tool):
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=timeout,
                 cwd=cwd,
             )

@@ -25,12 +25,14 @@ class Agent:
         tools: list[Tool] | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
+        debug: bool = False,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
+        self.debug = debug
         self._system = system_prompt(self.tools)
 
         # wire up sub-agent capability
@@ -49,7 +51,18 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
         self.context.maybe_compress(self.messages, self.llm)
 
+        if self.debug:
+            from rich.console import Console
+            console = Console()
+            console.print(f"\n[bold magenta]>>> Starting chat round[/bold magenta] [dim](total messages: {len(self.messages)})[/dim]")
+
+        round_count = 0
         for _ in range(self.max_rounds):
+            round_count += 1
+            if self.debug:
+                from rich.console import Console
+                console = Console()
+                console.print(f"\n[dim]--- Round {round_count} ---[/dim]")
             resp = self.llm.chat(
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
@@ -59,11 +72,25 @@ class Agent:
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
                 self.messages.append(resp.message)
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    content_preview = resp.content[:200] + "..." if len(resp.content) > 200 else resp.content
+                    console.print(f"[bold green]>>> LLM responded with text[/bold green] [dim]({len(resp.content)} chars)[/dim]")
+                    console.print(f"[dim]{content_preview}[/dim]")
+                self.messages.append(resp.message)
                 return resp.content
 
             # tool calls -> execute (parallel when multiple, like Claude Code's
             # StreamingToolExecutor which runs independent tools concurrently)
             self.messages.append(resp.message)
+
+            if self.debug:
+                from rich.console import Console
+                console = Console()
+                console.print(f"[bold blue]>>> LLM requested {len(resp.tool_calls)} tool call(s)[/bold blue]")
+                for i, tc in enumerate(resp.tool_calls, 1):
+                    console.print(f"  [cyan]{i}. {tc.name}[/cyan]")
 
             if len(resp.tool_calls) == 1:
                 tc = resp.tool_calls[0]
@@ -88,6 +115,10 @@ class Agent:
             # compress if tool outputs are big
             self.context.maybe_compress(self.messages, self.llm)
 
+            # Layer 4: Autocompact - run periodically in background (every 10 rounds)
+            if round_count % 20 == 0:
+                self.context.autocompact(self.messages, self.llm)
+
         return "(reached maximum tool-call rounds)"
 
     def _exec_tool(self, tc) -> str:
@@ -95,27 +126,78 @@ class Agent:
         tool = get_tool(tc.name)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
+        
+        if self.debug:
+            from rich.console import Console
+            console = Console()
+            console.print(f"\n[bold cyan]>>> Executing tool:[/bold cyan] [yellow]{tc.name}[/yellow]")
+            console.print(f"[dim]Arguments:[/dim]")
+            for k, v in tc.arguments.items():
+                val_str = repr(v) if isinstance(v, str) else str(v)
+                if isinstance(v, str) and len(val_str) > 200:
+                    val_str = val_str[:200] + "..."
+                console.print(f"  [green]{k}[/green]: {val_str}")
+            console.print(f"[dim]Tool is_read_only: {tool.is_read_only if tool else 'N/A'}[/dim]")
+        
         try:
-            return tool.execute(**tc.arguments)
+            result = tool.execute(**tc.arguments)
+            
+            if self.debug:
+                from rich.console import Console
+                console = Console()
+                result_preview = result[:300] + "..." if len(result) > 300 else result
+                # Replace newlines for cleaner display
+                result_preview = result_preview.replace('\n', '\\n')
+                console.print(f"[dim]Result ({len(result)} chars):[/dim] {result_preview}")
+            
+            return result
         except TypeError as e:
             return f"Error: bad arguments for {tc.name}: {e}"
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
 
     def _exec_tools_parallel(self, tool_calls, on_tool=None) -> list[str]:
-        """Run multiple tool calls concurrently using threads.
+        """Run multiple tool calls concurrently with safety for write operations.
 
-        This is inspired by Claude Code's StreamingToolExecutor which starts
-        executing tools while the model is still generating.  We simplify to:
-        when the model returns N tool calls at once, run them in parallel.
+        This mirrors Claude Code's concurrency model:
+        - Read-only tools (read_file, grep, glob) run in parallel
+        - Write tools (write_file, edit_file, bash) run sequentially to avoid race conditions
+        
+        Returns results in the same order as tool_calls for correct message pairing.
         """
+        from .tools.base import Tool
+        
         for tc in tool_calls:
             if on_tool:
                 on_tool(tc.name, tc.arguments)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(self._exec_tool, tc) for tc in tool_calls]
-            return [f.result() for f in futures]
+        # Separate read-only and write tools
+        read_only_calls = []
+        write_calls = []
+        
+        for tc in tool_calls:
+            tool = get_tool(tc.name)
+            if tool and tool.is_read_only:
+                read_only_calls.append(tc)
+            else:
+                write_calls.append(tc)
+        
+        results_map = {}  # tool_call_id -> result
+        
+        # Execute read-only tools in parallel
+        if read_only_calls:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                futures = {pool.submit(self._exec_tool, tc): tc for tc in read_only_calls}
+                for future in concurrent.futures.as_completed(futures):
+                    tc = futures[future]
+                    results_map[tc.id] = future.result()
+        
+        # Execute write tools sequentially (order matters for correctness)
+        for tc in write_calls:
+            results_map[tc.id] = self._exec_tool(tc)
+        
+        # Return results in original order
+        return [results_map[tc.id] for tc in tool_calls]
 
     def reset(self):
         """Clear conversation history."""

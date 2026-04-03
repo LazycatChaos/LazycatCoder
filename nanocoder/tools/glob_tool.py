@@ -10,6 +10,11 @@ class GlobTool(Tool):
         "Find files matching a glob pattern. "
         "Supports ** for recursive matching (e.g. '**/*.py')."
     )
+    
+    @property
+    def is_read_only(self) -> bool:
+        return True
+    
     parameters = {
         "type": "object",
         "properties": {

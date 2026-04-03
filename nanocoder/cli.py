@@ -29,6 +29,7 @@ def _parse_args():
     p.add_argument("--api-key", help="API key (default: $OPENAI_API_KEY)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
+    p.add_argument("--debug", action="store_true", help="Enable debug mode with verbose output")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args()
 
@@ -68,7 +69,7 @@ def main():
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )
-    agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens)
+    agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens, debug=args.debug)
 
     # resume saved session
     if args.resume:
@@ -103,8 +104,9 @@ def _run_once(agent: Agent, prompt: str):
 
 def _repl(agent: Agent, config: Config):
     """Interactive read-eval-print loop."""
+    debug_badge = " [yellow bold]DEBUG[/]" if config.debug else ""
     console.print(Panel(
-        f"[bold]NanoCoder[/bold] v{__version__}\n"
+        f"[bold]NanoCoder[/bold] v{__version__}{debug_badge}\n"
         f"Model: [cyan]{config.model}[/cyan]"
         + (f"  Base: [dim]{config.base_url}[/dim]" if config.base_url else "")
         + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",

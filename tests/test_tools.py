@@ -194,3 +194,44 @@ def test_agent_tool_schema():
     s = agent_t.schema()
     assert s["function"]["name"] == "agent"
     assert "task" in s["function"]["parameters"]["properties"]
+
+
+# --- debug mode ---
+
+def test_agent_debug_mode():
+    """Test that debug mode produces verbose output."""
+    from nanocoder.agent import Agent
+    from nanocoder.llm import LLMResponse
+    from io import StringIO
+    import sys
+    
+    # Create a mock LLM that doesn't make real API calls
+    class MockLLM:
+        def __init__(self):
+            self.total_prompt_tokens = 0
+            self.total_completion_tokens = 0
+            
+        def chat(self, messages, tools, on_token=None):
+            # Simulate a simple response without tool calls
+            return LLMResponse(
+                content="Hello! I'm a mock response.",
+                tool_calls=[]
+            )
+    
+    # Test with debug=True
+    agent = Agent(llm=MockLLM(), debug=True)
+    
+    # Capture stdout to check for debug output
+    old_stdout = sys.stdout
+    sys.stdout = captured = StringIO()
+    
+    try:
+        result = agent.chat("Test message")
+        output = captured.getvalue()
+    finally:
+        sys.stdout = old_stdout
+    
+    # Check that debug output was produced
+    assert "Starting chat round" in output or "Round 1" in output
+    assert "LLM responded with text" in output
+    assert result == "Hello! I'm a mock response."

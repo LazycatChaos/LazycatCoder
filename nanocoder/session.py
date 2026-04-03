@@ -27,7 +27,7 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
     }
 
     path = SESSIONS_DIR / f"{session_id}.json"
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return session_id
 
 

@@ -10,6 +10,11 @@ class Tool(ABC):
     description: str
     parameters: dict  # JSON Schema for the function args
 
+    @property
+    def is_read_only(self) -> bool:
+        """Return True if this tool doesn't modify state (safe for parallel execution)."""
+        return False
+
     @abstractmethod
     def execute(self, **kwargs) -> str:
         """Run the tool and return a text result."""

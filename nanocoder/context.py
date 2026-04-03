@@ -66,6 +66,51 @@ class ContextManager:
 
         return compressed
 
+    def autocompact(self, messages: list[dict], llm: LLM | None = None,
+                    min_turns: int = 20, keep_recent: int = 12) -> bool:
+        """Layer 4: Background periodic compaction.
+
+        This mirrors Claude Code's Autocompact feature which runs silently
+        in the background to keep context fresh without user awareness.
+
+        Args:
+            messages: The conversation history to compact
+            llm: LLM instance for generating summaries
+            min_turns: Minimum number of message turns before triggering
+            keep_recent: Number of recent messages to preserve intact
+
+        Returns:
+            True if compaction was performed, False otherwise
+        """
+        # only trigger if we have enough history
+        if len(messages) < min_turns:
+            return False
+
+        # skip if already compressed recently (check for summary marker)
+        if any("[Context compressed" in str(m.get("content", "")) for m in messages[:5]):
+            return False
+
+        # summarize the older portion, keep recent conversation intact
+        old = messages[:-keep_recent]
+        tail = messages[-keep_recent:]
+
+        if len(old) < 10:  # not enough old content to summarize
+            return False
+
+        summary = self._get_summary(old, llm)
+
+        messages.clear()
+        messages.append({
+            "role": "user",
+            "content": f"[Auto-compacted context summary]\n{summary}",
+        })
+        messages.append({
+            "role": "assistant",
+            "content": "Context has been summarized. Ready to continue.",
+        })
+        messages.extend(tail)
+        return True
+
     @staticmethod
     def _snip_tool_outputs(messages: list[dict]) -> bool:
         """Layer 1: Truncate tool results over 1500 chars to their first/last lines.

@@ -10,6 +10,11 @@ class ReadFileTool(Tool):
         "Read a file's contents with line numbers. "
         "Always read a file before editing it."
     )
+    
+    @property
+    def is_read_only(self) -> bool:
+        return True
+    
     parameters = {
         "type": "object",
         "properties": {

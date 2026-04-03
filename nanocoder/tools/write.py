@@ -10,6 +10,11 @@ class WriteFileTool(Tool):
         "Create a new file or completely overwrite an existing one. "
         "For small edits to existing files, prefer edit_file instead."
     )
+    
+    @property
+    def is_read_only(self) -> bool:
+        return False  # writes to disk
+    
     parameters = {
         "type": "object",
         "properties": {
@@ -29,7 +34,7 @@ class WriteFileTool(Tool):
         try:
             p = Path(file_path).expanduser().resolve()
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content)
+            p.write_text(content, encoding="utf-8")
             n_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
             return f"Wrote {n_lines} lines to {file_path}"
         except Exception as e:
