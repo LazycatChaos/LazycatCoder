@@ -169,7 +169,8 @@ def _repl(agent: Agent, config: Config):
                 console.print("[dim]No saved sessions.[/dim]")
             else:
                 for s in sessions:
-                    console.print(f"  [cyan]{s['id']}[/cyan] ({s['model']}, {s['saved_at']}) {s['preview']}")
+                    s = s.to_dict()
+                    console.print(f"  [cyan]{s['id']}[/cyan] ({s['model']}, {s['saved_at']}) {s['summary']}")
             continue
 
         # call the agent
