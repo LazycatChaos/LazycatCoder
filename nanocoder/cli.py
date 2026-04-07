@@ -84,7 +84,7 @@ def main():
     if args.resume:
         loaded = load_session(args.resume)
         if loaded:
-            agent.messages, loaded_model = loaded
+            agent.messages, loaded_model, metadata = loaded
             console.print(f"[green]Resumed session: {args.resume}[/green]")
         else:
             console.print(f"[red]Session '{args.resume}' not found.[/red]")
