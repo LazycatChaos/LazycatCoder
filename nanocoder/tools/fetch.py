@@ -268,11 +268,11 @@ The tool automatically extracts main content and removes navigation/ads."""
         domain = urlparse(url).netloc
         
         lines = [
-            f"馃寪 Fetched: {url}",
-            f"馃搳 Status: {status_code}",
-            f"馃搫 Type: {content_type}",
-            f"鈴憋笍 Time: {elapsed:.2f}s",
-            f"馃搹 Size: {len(content):,} bytes",
+            f"🌐 Fetched: {url}",
+            f"📊 Status: {status_code}",
+            f"📦 Type: {content_type}",
+            f"⏱️ Time: {elapsed:.2f}s",
+            f"📏 Size: {len(content):,} bytes",
             "",
             "=" * 60,
             "",

@@ -28,7 +28,11 @@ class EditFileTool(Tool):
         "For 'replace': old_string must appear exactly once in the file. "
         "For insert operations: specify the line number and content to insert. "
         "Always read the file first before editing. "
-        "The tool will validate that your changes can be applied safely."
+        "The tool will validate that your changes can be applied safely.\n\n"
+        "CHUNKED APPENDING for large files: "
+        "Use command='append' to add content to the end of a file. "
+        "This is useful after write_file creates the initial file, "
+        "then you append remaining content in chunks."
     )
 
     search_hint = "edit existing files"

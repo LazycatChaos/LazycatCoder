@@ -17,6 +17,7 @@ Enhanced features (inspired by Claude Code QueryEngine):
 
 import concurrent.futures
 import asyncio
+import threading
 import time
 import os
 from typing import Optional, Callable
@@ -78,6 +79,10 @@ class Agent:
             if hasattr(t, 'workdir'):
                 t.workdir = self.workdir
 
+        # Lock to protect messages during background autocompact
+        self._messages_lock = threading.Lock()
+        self._autocompact_running = False
+
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages
 
@@ -91,7 +96,7 @@ class Agent:
         
         # Record user message to session (critical - wait for completion)
         if self.auto_save and self._session_manager:
-            asyncio.run(self._session_manager.record_message(
+            self._run_async(self._session_manager.record_message(
                 self.messages, self.llm.model, is_critical=True
             ))
 
@@ -101,7 +106,7 @@ class Agent:
             console.print(f"\n[bold magenta]>>> Starting chat round[/bold magenta] [dim](total messages: {len(self.messages)})[/dim]")
 
         round_count = 0
-        consecutive_errors = 0  # 🔥🔥🔥 新增：记录连续错误次数
+        consecutive_errors = 0  # 新增：记录连续错误次数
 
         for _ in range(self.max_rounds):
             round_count += 1
@@ -137,7 +142,7 @@ class Agent:
                 
                 # Record assistant response (non-critical, lazy flush)
                 if self.auto_save and self._session_manager:
-                    asyncio.run(self._session_manager.record_message(
+                    self._run_async(self._session_manager.record_message(
                         self.messages, self.llm.model, is_critical=False
                     ))
                 
@@ -178,11 +183,11 @@ class Agent:
                         "tool_call_id": tc.id,
                         "content": result,
                     })
-                    # 🔥🔥🔥 新增：检查结果是否包含错误
+                    # 新增：检查结果是否包含错误
                     if str(result).startswith("Error:"):
                         has_error_in_this_round = True
 
-            # 🔥🔥🔥 新增：防死循环 / 熔断机制核心逻辑 🔥🔥🔥
+            # 新增：防死循环 / 熔断机制核心逻辑
             if has_error_in_this_round:
                 consecutive_errors += 1
                 if consecutive_errors >= 2:  # 如果连续 2 轮都发生工具调用错误
@@ -192,8 +197,8 @@ class Agent:
                         "STOP calling the same tool. "
                         "If you are trying to output documentation or code to the user, just provide it directly in plain text/Markdown right now."
                     )
-                    # 强行塞入一条 user 消息来打断模型的注意力
-                    self.messages.append({"role": "user", "content": warning_msg})
+                    # 注入 system 消息避免破坏 assistant→tool→assistant 的合法序列
+                    self.messages.append({"role": "system", "content": warning_msg})
                     consecutive_errors = 0  # 重置计数，给它一次听话的机会
 
                     if self.debug:
@@ -201,21 +206,23 @@ class Agent:
                             f"\n[bold red]>>> System injected circuit-breaker warning due to loop.[/bold red]")
             else:
                 consecutive_errors = 0  # 工具执行成功，重置计数
-            # 🔥🔥🔥===================================🔥🔥🔥
+            #===================================
 
             # compress if tool outputs are big
-            self.context.maybe_compress(self.messages, self.llm)
-            # compress if tool outputs are big
-            self.context.maybe_compress(self.messages, self.llm)
+            with self._messages_lock:
+                self.context.maybe_compress(self.messages, self.llm)
 
-            # Layer 4: Autocompact - run periodically in background (every 10 rounds)
-            if round_count % 20 == 0:
-                self.context.autocompact(self.messages, self.llm)
-                # After compaction, save the compressed state
-                if self.auto_save and self._session_manager:
-                    asyncio.run(self._session_manager.record_message(
-                        self.messages, self.llm.model, is_critical=True
-                    ))
+            # Layer 4: Autocompact - trigger by token usage, not fixed rounds.
+            # This adapts to any workload: short Q&A won't waste LLM calls,
+            # heavy file operations compress before hitting the wall.
+            if not self._autocompact_running:
+                usage = self.context.token_usage(self.messages)
+                if self.context.should_autocompact(usage):
+                    self._autocompact_running = True
+                    threading.Thread(
+                        target=self._background_autocompact,
+                        daemon=True,
+                    ).start()
 
         return "(reached maximum tool-call rounds)"
 
@@ -308,6 +315,57 @@ class Agent:
         # Return results in original order
         return [results_map[tc.id] for tc in tool_calls]
 
+    def _background_autocompact(self):
+        """Run autocompact in a background daemon thread.
+
+        Strategy: copy messages under lock → release lock → LLM summarizes
+        the copy → re-acquire lock → swap.  The main loop is only blocked
+        for the brief copy/swap, never for the LLM call.
+        """
+        try:
+            # Step 1: snapshot messages under lock
+            acquired = self._messages_lock.acquire(timeout=2)
+            if not acquired:
+                return  # Main loop is busy, skip this round
+            snapshot = list(self.messages)  # shallow copy of list
+            self._messages_lock.release()
+
+            # Step 2: summarize the snapshot (no lock held, LLM can take time)
+            old_count = len(snapshot)
+            summary = self.context._get_summary(snapshot, self.llm)
+            if not summary:
+                return
+
+            # Step 3: rebuild compacted messages
+            keep_recent = 12
+            tail = snapshot[-keep_recent:] if len(snapshot) > keep_recent else snapshot
+            compacted = [
+                {"role": "user", "content": f"[Auto-compacted context summary]\n{summary}"},
+                {"role": "assistant", "content": "Context has been summarized. Ready to continue."},
+            ] + tail
+
+            # Step 4: swap under lock
+            acquired = self._messages_lock.acquire(timeout=5)
+            if not acquired:
+                return  # Main loop is busy, discard result
+            self.messages[:] = compacted  # in-place replacement
+            self.context._last_autocompact_tokens = self.context.token_usage(self.messages)
+            self._messages_lock.release()
+
+            # Step 5: save after successful compaction
+            if self.auto_save and self._session_manager:
+                try:
+                    self._run_async(self._session_manager.record_message(
+                        self.messages, self.llm.model, is_critical=True
+                    ))
+                except Exception:
+                    pass  # Don't crash the thread on save failure
+        finally:
+            self._autocompact_running = False
+            # Ensure lock is released if we still hold it
+            if self._messages_lock.locked():
+                self._messages_lock.release()
+
     def get_turn_errors(self) -> list[dict]:
         """Get errors from the current turn only (using watermark)."""
         return self._error_log[self._error_watermark:]
@@ -353,3 +411,18 @@ class Agent:
         self._error_watermark = 0
         self._round_count = 0
         # Don't reset session_id or token stats - keep for the session lifetime
+
+    @staticmethod
+    def _run_async(coro):
+        """Run an async coroutine safely, handling existing event loops."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            # Already in an event loop: schedule and wait synchronously
+            import concurrent.futures
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            future.result(timeout=10)
+        else:
+            asyncio.run(coro)

@@ -67,6 +67,7 @@ def main():
         model=config.model,
         api_key=config.api_key,
         base_url=config.base_url,
+        timeout=config.timeout,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )
@@ -118,6 +119,7 @@ def _repl(agent: Agent, config: Config):
         f"[bold]NanoCoder[/bold] v{__version__}{debug_badge}\n"
         f"Model: [cyan]{config.model}[/cyan]"
         + (f"  Base: [dim]{config.base_url}[/dim]" if config.base_url else "")
+        + f"  Timeout: [dim]{config.timeout}s[/dim]"
         + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",
         border_style="blue",
     ))
@@ -156,6 +158,18 @@ def _repl(agent: Agent, config: Config):
                 agent.llm.model = new_model
                 config.model = new_model
                 console.print(f"Switched to [cyan]{new_model}[/cyan]")
+            continue
+        if user_input.startswith("/timeout "):
+            try:
+                new_timeout = int(user_input[9:].strip())
+                if new_timeout > 0:
+                    agent.llm.client.timeout = new_timeout
+                    config.timeout = new_timeout
+                    console.print(f"Timeout set to [cyan]{new_timeout}s[/cyan]")
+                else:
+                    console.print("[red]Timeout must be positive.[/red]")
+            except ValueError:
+                console.print("[red]Invalid timeout value.[/red]")
             continue
         if user_input == "/compact":
             from .context import estimate_tokens
@@ -211,6 +225,7 @@ def _show_help():
         "  /help          Show this help\n"
         "  /reset         Clear conversation history\n"
         "  /model <name>  Switch model mid-conversation\n"
+        "  /timeout <sec> Set request timeout (default: 120s)\n"
         "  /tokens        Show token usage\n"
         "  /compact       Compress conversation context\n"
         "  /save          Save session to disk\n"

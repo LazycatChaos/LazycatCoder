@@ -41,6 +41,26 @@ class ContextManager:
         self._snip_at = int(max_tokens * 0.50)    # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
         self._collapse_at = int(max_tokens * 0.90)   # 90% -> hard collapse
+        self._autocompact_at = int(max_tokens * 0.40)  # 40% -> proactive background compact
+        self._last_autocompact_tokens = 0  # Track to avoid redundant compaction
+
+    def token_usage(self, messages: list[dict]) -> int:
+        """Return current estimated token count."""
+        return estimate_tokens(messages)
+
+    def should_autocompact(self, current_tokens: int) -> bool:
+        """Decide whether to trigger background autocompact.
+
+        Triggers when:
+        1. Token usage exceeds 40% of max (enough history to summarize)
+        2. At least 10k new tokens since last autocompact (avoid thrashing)
+        3. At least 10 messages exist (enough content to compress)
+        """
+        if current_tokens < self._autocompact_at:
+            return False
+        if current_tokens - self._last_autocompact_tokens < 10_000:
+            return False
+        return True
 
     def maybe_compress(self, messages: list[dict], llm: LLM | None = None) -> bool:
         """Apply compression layers as needed. Returns True if any compression happened."""
