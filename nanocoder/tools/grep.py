@@ -210,9 +210,38 @@ class GrepTool(Tool):
             search_path = os.getcwd()
         
         try:
+            # Determine ripgrep executable path
+            # Try 'rg' first, then fallback to Windows path if on WSL
+            import shutil
+            rg_executable = shutil.which('rg') or 'rg'
+            
+            # If rg not found and running in WSL, try to use Windows rg.exe
+            if rg_executable == 'rg' and os.path.exists('/proc/version'):
+                with open('/proc/version') as f:
+                    version = f.read().lower()
+                if 'microsoft' in version or 'wsl' in version:
+                    # Try to get rg path from Windows using where.exe and wslpath
+                    try:
+                        # First get Windows path using where.exe
+                        result = subprocess.run(
+                            ['cmd.exe', '/c', 'where.exe', 'rg'],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            win_path = result.stdout.strip().split('\n')[0]
+                            # Convert to WSL path
+                            result = subprocess.run(
+                                ['wslpath', '-u', win_path],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if result.returncode == 0 and result.stdout.strip():
+                                rg_executable = result.stdout.strip()
+                    except Exception:
+                        pass
+            
             # Execute ripgrep
             result = subprocess.run(
-                args,
+                [rg_executable] + args[1:],  # Replace 'rg' with determined executable
                 cwd=search_path,
                 capture_output=True,
                 text=True,
