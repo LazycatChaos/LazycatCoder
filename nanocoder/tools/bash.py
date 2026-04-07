@@ -10,15 +10,17 @@ Claude Code's BashTool is 1,143 lines. This is the distilled version:
 import os
 import re
 import subprocess
-from typing import Optional
-from .base import Tool, ValidationResult, PermissionDecision
+import shutil
+from pathlib import Path
+from typing import Optional, Literal
+from .base import Tool, ValidationResult
 
-# track cwd across commands (Claude Code does this too)
-# This is used when no explicit workdir is set on the tool
+# 跨命令跟踪当前工作目录
 _cwd: Optional[str] = None
 
-# patterns that could wreck the filesystem or leak secrets
+# 危险命令模式（已增加 Windows/PowerShell 的高危操作拦截）
 _DANGEROUS_PATTERNS = [
+    # Linux / Bash
     (r"\brm\s+(-\w*)?-r\w*\s+(/|~|\$HOME)", "recursive delete on home/root"),
     (r"\brm\s+(-\w*)?-rf\s", "force recursive delete"),
     (r"\bmkfs\b", "format filesystem"),
@@ -26,15 +28,17 @@ _DANGEROUS_PATTERNS = [
     (r">\s*/dev/sd[a-z]", "overwrite block device"),
     (r"\bchmod\s+(-R\s+)?777\s+/", "chmod 777 on root"),
     (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
-    (r"\bcurl\b.*\|\s*(sudo\s+)?bash", "pipe curl to bash"),
-    (r"\bwget\b.*\|\s*(sudo\s+)?bash", "pipe wget to bash"),
+    # Windows / PowerShell 专属高危
+    (r"(?i)\bRemove-Item\s+-Recurse\s+-Force\s+[A-Z]:\\", "recursive delete on root drive"),
+    (r"(?i)\bdel\s+/s\s+/q\s+[A-Z]:\\", "force recursive delete on root drive"),
+    (r"(?i)\bformat\s+[A-Z]:", "format drive"),
 ]
 
 
 class BashTool(Tool):
     name = "bash"
     description = (
-        "Execute a shell command. Returns stdout, stderr, and exit code. "
+        "Execute a shell/PowerShell command. Returns stdout, stderr, and exit code. "
         "Use this for running tests, installing packages, git operations, etc. "
         "Output is automatically truncated (head + tail preserved) for large outputs."
     )
@@ -58,7 +62,7 @@ class BashTool(Tool):
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The shell command to run",
+                "description": "The shell/PowerShell command to run",
             },
             "timeout": {
                 "type": "integer",
@@ -69,15 +73,9 @@ class BashTool(Tool):
     }
 
     def validate_input(self, command: str, **kwargs) -> ValidationResult:
-        """Validate the command before execution."""
         if not command or not command.strip():
-            return ValidationResult(
-                valid=False,
-                message="Error: Command cannot be empty",
-                error_code=1
-            )
-        
-        # Check for dangerous patterns
+            return ValidationResult(valid=False, message="Error: Command cannot be empty", error_code=1)
+
         warning = _check_dangerous(command)
         if warning:
             return ValidationResult(
@@ -85,27 +83,24 @@ class BashTool(Tool):
                 message=f"Blocked: {warning}\nCommand: {command}\nIf intentional, modify the command to be more specific.",
                 error_code=2
             )
-        
         return ValidationResult(valid=True)
 
     def execute(self, command: str, timeout: int = 120) -> str:
         global _cwd
-        
-        # Validate input first
+
         validation = self.validate_input(command)
         if not validation.valid:
             return validation.message
 
-        # use working directory: explicit workdir > tracked cwd > current directory
         cwd = self.workdir or _cwd or os.getcwd()
 
-        # Windows compatibility: use bash -c "command" for WSL/Git Bash
-        if os.name == "nt":  # Windows
-            import shutil
-            bash_path = shutil.which("bash")
-            if bash_path:
-                # Use bash -c to execute commands in WSL/Git Bash
-                command = f'"{bash_path}" -c "{command}"'
+        # Windows 下使用 PowerShell 替代 bash
+        if os.name == "nt":
+            # 优先寻找 PowerShell Core (pwsh)，否则用自带的 powershell
+            ps_path = shutil.which("pwsh") or shutil.which("powershell")
+            if ps_path:
+                # 使用 -NoProfile 提升启动速度
+                command = f'"{ps_path}" -NoProfile -NonInteractive -Command {command}'
 
         try:
             proc = subprocess.run(
@@ -118,27 +113,28 @@ class BashTool(Tool):
                 cwd=cwd,
             )
 
-            # track cd commands so next command runs in the right place
+            # 如果执行成功，尝试更新工作目录
             if proc.returncode == 0:
                 _update_cwd(command, cwd)
-            
+
             out = proc.stdout
             if proc.stderr:
                 out += f"\n[stderr]\n{proc.stderr}"
             if proc.returncode != 0:
                 out += f"\n[exit code: {proc.returncode}]"
-            
+
+            # 截断处理 (保护 Context Length)
             # keep head + tail to preserve the most useful info
             # Claude Code uses 15K limit with 6K head + 3K tail
             if len(out) > 15_000:
                 head_size = 6000
                 tail_size = 3000
                 out = (
-                    out[:head_size]
-                    + f"\n\n... truncated ({len(out)} chars total, showing first {head_size} and last {tail_size} chars) ...\n\n"
-                    + out[-tail_size:]
+                        out[:head_size]
+                        + f"\n\n... truncated ({len(out)} chars total, showing first {head_size} and last {tail_size} chars) ...\n\n"
+                        + out[-tail_size:]
                 )
-            
+
             return out.strip() or "(no output)"
         except subprocess.TimeoutExpired:
             return f"Error: timed out after {timeout}s"
@@ -157,7 +153,6 @@ class BashTool(Tool):
 
 
 def _check_dangerous(cmd: str) -> Optional[str]:
-    """Return a warning string if the command looks destructive, else None."""
     for pattern, reason in _DANGEROUS_PATTERNS:
         if re.search(pattern, cmd):
             return reason
@@ -165,14 +160,16 @@ def _check_dangerous(cmd: str) -> Optional[str]:
 
 
 def _update_cwd(command: str, current_cwd: str):
-    """Track directory changes from cd commands."""
+    """Track directory changes from cd commands (supports Bash and PowerShell)."""
     global _cwd
-    # simple heuristic: look for cd at the end of a && chain or standalone
-    parts = command.split("&&")
+    # PowerShell 常用 ';' 或 '&&' 连接命令
+    parts = re.split(r'&&|;', command)
     for part in parts:
         part = part.strip()
-        if part.startswith("cd "):
-            target = part[3:].strip().strip("'\"")
+        # 匹配 cd, Set-Location, sl, chdir 等
+        match = re.match(r'^(cd|Set-Location|sl|chdir)\s+(.+)', part, re.IGNORECASE)
+        if match:
+            target = match.group(2).strip().strip("'\"")
             if target:
                 new_dir = os.path.normpath(os.path.join(current_cwd, os.path.expanduser(target)))
                 if os.path.isdir(new_dir):
