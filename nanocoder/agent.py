@@ -47,10 +47,12 @@ class Agent:
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
         self.debug = debug
-        self._system = system_prompt(self.tools)
         
         # Working directory (default: current directory)
         self.workdir = workdir if workdir is not None else os.getcwd()
+        
+        # System prompt with workdir
+        self._system = system_prompt(self.tools, self.workdir)
         
         # Session management (Claude Code style real-time persistence)
         self.session_id = session_id
@@ -99,6 +101,8 @@ class Agent:
             console.print(f"\n[bold magenta]>>> Starting chat round[/bold magenta] [dim](total messages: {len(self.messages)})[/dim]")
 
         round_count = 0
+        consecutive_errors = 0  # 🔥🔥🔥 新增：记录连续错误次数
+
         for _ in range(self.max_rounds):
             round_count += 1
             self._round_count += 1
@@ -150,6 +154,8 @@ class Agent:
                 for i, tc in enumerate(resp.tool_calls, 1):
                     console.print(f"  [cyan]{i}. {tc.name}[/cyan]")
 
+            has_error_in_this_round = False  #记录本轮是否有错误
+
             if len(resp.tool_calls) == 1:
                 tc = resp.tool_calls[0]
                 if on_tool:
@@ -160,6 +166,9 @@ class Agent:
                     "tool_call_id": tc.id,
                     "content": result,
                 })
+                #新增：检查结果是否包含错误
+                if str(result).startswith("Error:"):
+                    has_error_in_this_round = True
             else:
                 # parallel execution for multiple tool calls
                 results = self._exec_tools_parallel(resp.tool_calls, on_tool)
@@ -169,7 +178,33 @@ class Agent:
                         "tool_call_id": tc.id,
                         "content": result,
                     })
+                    # 🔥🔥🔥 新增：检查结果是否包含错误
+                    if str(result).startswith("Error:"):
+                        has_error_in_this_round = True
 
+            # 🔥🔥🔥 新增：防死循环 / 熔断机制核心逻辑 🔥🔥🔥
+            if has_error_in_this_round:
+                consecutive_errors += 1
+                if consecutive_errors >= 2:  # 如果连续 2 轮都发生工具调用错误
+                    warning_msg = (
+                        "SYSTEM WARNING: You have repeatedly failed to call tools correctly. "
+                        "You seem to be stuck in a loop calling a tool with missing or wrong arguments. "
+                        "STOP calling the same tool. "
+                        "If you are trying to output documentation or code to the user, just provide it directly in plain text/Markdown right now."
+                    )
+                    # 强行塞入一条 user 消息来打断模型的注意力
+                    self.messages.append({"role": "user", "content": warning_msg})
+                    consecutive_errors = 0  # 重置计数，给它一次听话的机会
+
+                    if self.debug:
+                        console.print(
+                            f"\n[bold red]>>> System injected circuit-breaker warning due to loop.[/bold red]")
+            else:
+                consecutive_errors = 0  # 工具执行成功，重置计数
+            # 🔥🔥🔥===================================🔥🔥🔥
+
+            # compress if tool outputs are big
+            self.context.maybe_compress(self.messages, self.llm)
             # compress if tool outputs are big
             self.context.maybe_compress(self.messages, self.llm)
 

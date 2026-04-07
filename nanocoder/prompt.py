@@ -4,8 +4,8 @@ import os
 import platform
 
 
-def system_prompt(tools) -> str:
-    cwd = os.getcwd()
+def system_prompt(tools, workdir: str = None) -> str:
+    cwd = workdir if workdir is not None else os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
 
