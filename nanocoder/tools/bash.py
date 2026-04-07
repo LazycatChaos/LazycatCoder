@@ -121,7 +121,7 @@ class BashTool(Tool):
             if proc.returncode == 0:
                 _update_cwd(command, cwd)
 
-            out = proc.stdout
+            out = proc.stdout or ""
             if proc.stderr:
                 out += f"\n[stderr]\n{proc.stderr}"
             if proc.returncode != 0:

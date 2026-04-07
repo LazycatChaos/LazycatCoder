@@ -45,7 +45,7 @@ class Agent:
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
         self.messages: list[dict] = []
-        self.context = ContextManager(max_tokens=max_context_tokens)
+        self.context = ContextManager(max_tokens=max_context_tokens, model=llm.model)
         self.max_rounds = max_rounds
         self.debug = debug
         
@@ -129,6 +129,7 @@ class Agent:
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
                 on_token=on_token,
+                debug=self.debug,
             )
             
             # Track token usage

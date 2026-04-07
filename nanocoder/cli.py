@@ -161,6 +161,12 @@ def _repl(agent: Agent, config: Config):
                 new_dir = os.path.abspath(os.path.expanduser(parts[1]))
                 if os.path.isdir(new_dir):
                     agent.workdir = new_dir
+                    # Sync: update system prompt and tools that support workdir
+                    from .prompt import system_prompt
+                    agent._system = system_prompt(agent.tools, new_dir)
+                    for t in agent.tools:
+                        if hasattr(t, 'workdir'):
+                            t.workdir = new_dir
                     console.print(f"Workdir set to [cyan]{new_dir}[/cyan]")
                 else:
                     console.print(f"[red]Directory not found: {new_dir}[/red]")
@@ -170,10 +176,32 @@ def _repl(agent: Agent, config: Config):
             c = agent.llm.total_completion_tokens
             console.print(f"Tokens used this session: [cyan]{p}[/cyan] prompt + [cyan]{c}[/cyan] completion = [bold]{p+c}[/bold] total")
             continue
+        if user_input == "/usage":
+            from .context import estimate_tokens
+            stats = agent.get_usage_stats()
+            ctx_tokens = estimate_tokens(agent.messages)
+            ctx_pct = ctx_tokens / agent.context.max_tokens * 100
+            console.print(Panel(
+                f"[bold]Token Usage Report[/bold]\n\n"
+                f"  Prompt tokens:       [cyan]{stats['input_tokens']}[/cyan]\n"
+                f"  Completion tokens:   [cyan]{stats['output_tokens']}[/cyan]\n"
+                f"  Total tokens:        [bold]{stats['total_tokens']}[/bold]\n"
+                f"  Rounds:              {stats['rounds']}\n"
+                + (f"  Avg prompt/round:    {stats['input_tokens'] // max(stats['rounds'], 1)}\n"
+                   f"  Avg completion/round: {stats['output_tokens'] // max(stats['rounds'], 1)}\n"
+                   if stats['rounds'] > 0 else "")
+                + f"\n  Context tokens:      {ctx_tokens} / {agent.context.max_tokens} ({ctx_pct:.1f}%)\n"
+                f"  Messages in context: {len(agent.messages)}\n"
+                f"  Errors this session: {len(agent.get_all_errors())}",
+                title="Usage",
+                border_style="cyan",
+            ))
+            continue
         if user_input.startswith("/model "):
             new_model = user_input[7:].strip()
             if new_model:
                 agent.llm.model = new_model
+                agent.context.model = new_model  # Sync tokenizer model
                 config.model = new_model
                 console.print(f"Switched to [cyan]{new_model}[/cyan]")
             continue
@@ -246,7 +274,8 @@ def _show_help():
         "  /timeout <sec> Set request timeout (default: 120s)\n"
         "  /debug         Toggle debug mode\n"
         "  /workdir [dir] Show or change working directory\n"
-        "  /tokens        Show token usage\n"
+        "  /tokens        Show token usage (total)\n"
+        "  /usage         Show detailed usage report (per-round avg, context %)\n"
         "  /compact       Compress conversation context\n"
         "  /save          Save session to disk\n"
         "  /sessions      List saved sessions\n"

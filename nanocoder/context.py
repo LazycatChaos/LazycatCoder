@@ -19,24 +19,99 @@ if TYPE_CHECKING:
     from .llm import LLM
 
 
-def _approx_tokens(text: str) -> int:
-    """Rough token count. ~3.5 chars/token for mixed en/zh content."""
-    return len(text) // 3
+# ---------------------------------------------------------------------------
+# Tokenizer selection — pick the right tokenizer for the current model
+# ---------------------------------------------------------------------------
+
+class _TokenizerProxy:
+    """Lazy tokenizer wrapper that picks the right backend per model."""
+
+    def __init__(self):
+        self._qwen_tokenizer = None
+        self._tiktoken_enc = None
+        self._last_model: str | None = None
+        self._active: str | None = None  # 'qwen' | 'tiktoken' | 'fallback'
+
+    def _ensure_qwen(self):
+        if self._qwen_tokenizer is None:
+            try:
+                from .tokenize import CustomTokenizer
+                from pathlib import Path
+                vocab_path = Path(__file__).parent / "tokenize" / "tiktoken_file"
+                self._qwen_tokenizer = CustomTokenizer(str(vocab_path))
+            except Exception:
+                pass  # Qwen tokenizer unavailable, will fallback
+
+    def _ensure_tiktoken(self, model: str):
+        """Get the right tiktoken encoding for the model."""
+        if self._tiktoken_enc is None:
+            try:
+                import tiktoken
+                # Map model names to tiktoken encodings
+                if "gpt-4" in model or "gpt-3.5" in model:
+                    enc_name = "cl100k_base"
+                elif "o1" in model or "o3" in model:
+                    enc_name = "o200k_base"
+                else:
+                    enc_name = "cl100k_base"  # default for OpenAI models
+                self._tiktoken_enc = tiktoken.get_encoding(enc_name)
+            except Exception:
+                pass  # tiktoken unavailable
+
+    def count(self, text: str, model: str | None = None) -> int:
+        """Count tokens using the best available tokenizer for the model."""
+        # Detect if model changed
+        if model != self._last_model:
+            self._last_model = model
+            self._active = None  # force re-detection
+
+        if self._active is None:
+            if model and ("qwen" in model.lower() or "qwq" in model.lower()):
+                self._ensure_qwen()
+                if self._qwen_tokenizer is not None:
+                    self._active = "qwen"
+            if self._active is None and model:
+                self._ensure_tiktoken(model)
+                if self._tiktoken_enc is not None:
+                    self._active = "tiktoken"
+            if self._active is None:
+                self._active = "fallback"
+
+        if self._active == "qwen":
+            return len(self._qwen_tokenizer.encode(text))
+        elif self._active == "tiktoken":
+            return len(self._tiktoken_enc.encode(text))
+        else:
+            # Fallback: mixed-language heuristic
+            # - CJK chars ≈ 1 token each
+            # - Latin/ASCII ≈ 3.5 chars/token
+            cjk = sum(1 for c in text if ord(c) > 0x2E80)
+            ascii_len = len(text) - cjk
+            return cjk + ascii_len // 3
 
 
-def estimate_tokens(messages: list[dict]) -> int:
+_tokenizer = _TokenizerProxy()
+
+
+def _approx_tokens(text: str, model: str | None = None) -> int:
+    """Estimate token count using the best available tokenizer for the model."""
+    return _tokenizer.count(text, model)
+
+
+def estimate_tokens(messages: list[dict], model: str | None = None) -> int:
     total = 0
     for m in messages:
         if m.get("content"):
-            total += _approx_tokens(m["content"])
+            total += _approx_tokens(m["content"], model)
         if m.get("tool_calls"):
-            total += _approx_tokens(str(m["tool_calls"]))
+            total += _approx_tokens(str(m["tool_calls"]), model)
     return total
 
 
 class ContextManager:
-    def __init__(self, max_tokens: int = 128_000):
+    def __init__(self, max_tokens: int = 128_000, model: str | None = None):
         self.max_tokens = max_tokens
+        self.model = model  # Track model for accurate token counting
         # layer thresholds (fraction of max_tokens)
         self._snip_at = int(max_tokens * 0.50)    # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
@@ -46,7 +121,7 @@ class ContextManager:
 
     def token_usage(self, messages: list[dict]) -> int:
         """Return current estimated token count."""
-        return estimate_tokens(messages)
+        return estimate_tokens(messages, self.model)
 
     def should_autocompact(self, current_tokens: int) -> bool:
         """Decide whether to trigger background autocompact.
@@ -64,20 +139,20 @@ class ContextManager:
 
     def maybe_compress(self, messages: list[dict], llm: LLM | None = None) -> bool:
         """Apply compression layers as needed. Returns True if any compression happened."""
-        current = estimate_tokens(messages)
+        current = estimate_tokens(messages, self.model)
         compressed = False
 
         # Layer 1: snip verbose tool outputs
         if current > self._snip_at:
             if self._snip_tool_outputs(messages):
                 compressed = True
-                current = estimate_tokens(messages)
+                current = estimate_tokens(messages, self.model)
 
         # Layer 2: LLM-powered summarization of old turns
         if current > self._summarize_at and len(messages) > 10:
             if self._summarize_old(messages, llm, keep_recent=8):
                 compressed = True
-                current = estimate_tokens(messages)
+                current = estimate_tokens(messages, self.model)
 
         # Layer 3: hard collapse - last resort
         if current > self._collapse_at and len(messages) > 4:
@@ -87,7 +162,7 @@ class ContextManager:
         return compressed
 
     def autocompact(self, messages: list[dict], llm: LLM | None = None,
-                    min_turns: int = 20, keep_recent: int = 12) -> bool:
+                    min_turns: int = 8, keep_recent: int = 12) -> bool:
         """Layer 4: Background periodic compaction.
 
         This mirrors Claude Code's Autocompact feature which runs silently
