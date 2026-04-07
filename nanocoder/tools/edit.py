@@ -369,7 +369,7 @@ class EditFileTool(Tool):
             return "\n".join(preview_lines)
         
         except Exception as e:
-            return f"Error editing file: {e}"
+            return f"Error: Failed to edit file: {e}"
 
     def get_activity_description(self, kwargs: dict) -> str:
         """Get a short description of what the tool is doing."""

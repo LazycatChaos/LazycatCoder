@@ -147,6 +147,24 @@ def _repl(agent: Agent, config: Config):
             agent.reset()
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
+        if user_input == "/debug":
+            config.debug = not config.debug
+            agent.debug = config.debug
+            status = "on" if config.debug else "off"
+            console.print(f"Debug mode [{status}]")
+            continue
+        if user_input.startswith("/workdir"):
+            parts = user_input.split(None, 1)
+            if len(parts) < 2:
+                console.print(f"Current workdir: [cyan]{agent.workdir}[/cyan]")
+            else:
+                new_dir = os.path.abspath(os.path.expanduser(parts[1]))
+                if os.path.isdir(new_dir):
+                    agent.workdir = new_dir
+                    console.print(f"Workdir set to [cyan]{new_dir}[/cyan]")
+                else:
+                    console.print(f"[red]Directory not found: {new_dir}[/red]")
+            continue
         if user_input == "/tokens":
             p = agent.llm.total_prompt_tokens
             c = agent.llm.total_completion_tokens
@@ -226,6 +244,8 @@ def _show_help():
         "  /reset         Clear conversation history\n"
         "  /model <name>  Switch model mid-conversation\n"
         "  /timeout <sec> Set request timeout (default: 120s)\n"
+        "  /debug         Toggle debug mode\n"
+        "  /workdir [dir] Show or change working directory\n"
         "  /tokens        Show token usage\n"
         "  /compact       Compress conversation context\n"
         "  /save          Save session to disk\n"

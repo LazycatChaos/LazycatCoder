@@ -6,6 +6,7 @@ from .bash import BashTool
 from .read import ReadFileTool
 from .write import WriteFileTool
 from .edit import EditFileTool
+from .delete import DeleteFileTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
@@ -28,6 +29,7 @@ class ToolRegistry:
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
+            DeleteFileTool(),
             GlobTool(),
             GrepTool(),
             AgentTool(),

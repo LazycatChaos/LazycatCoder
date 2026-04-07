@@ -96,9 +96,15 @@ class Agent:
         
         # Record user message to session (critical - wait for completion)
         if self.auto_save and self._session_manager:
-            self._run_async(self._session_manager.record_message(
-                self.messages, self.llm.model, is_critical=True
-            ))
+            try:
+                self._run_async(self._session_manager.record_message(
+                    self.messages, self.llm.model, is_critical=True
+                ))
+            except Exception as e:
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"[yellow]⚠ Session save failed: {e}[/yellow]")
 
         if self.debug:
             from rich.console import Console
@@ -142,9 +148,15 @@ class Agent:
                 
                 # Record assistant response (non-critical, lazy flush)
                 if self.auto_save and self._session_manager:
-                    self._run_async(self._session_manager.record_message(
-                        self.messages, self.llm.model, is_critical=False
-                    ))
+                    try:
+                        self._run_async(self._session_manager.record_message(
+                            self.messages, self.llm.model, is_critical=False
+                        ))
+                    except Exception as e:
+                        if self.debug:
+                            from rich.console import Console
+                            console = Console()
+                            console.print(f"[yellow]⚠ Session save failed: {e}[/yellow]")
                 
                 return resp.content
 
@@ -171,8 +183,8 @@ class Agent:
                     "tool_call_id": tc.id,
                     "content": result,
                 })
-                #新增：检查结果是否包含错误
-                if str(result).startswith("Error:"):
+                # Check if tool returned an error
+                if self._is_tool_error(result):
                     has_error_in_this_round = True
             else:
                 # parallel execution for multiple tool calls
@@ -183,25 +195,36 @@ class Agent:
                         "tool_call_id": tc.id,
                         "content": result,
                     })
-                    # 新增：检查结果是否包含错误
-                    if str(result).startswith("Error:"):
+                    # Check if tool returned an error
+                    if self._is_tool_error(result):
                         has_error_in_this_round = True
 
             # 新增：防死循环 / 熔断机制核心逻辑
             if has_error_in_this_round:
                 consecutive_errors += 1
                 if consecutive_errors >= 2:  # 如果连续 2 轮都发生工具调用错误
-                    warning_msg = (
-                        "SYSTEM WARNING: You have repeatedly failed to call tools correctly. "
-                        "You seem to be stuck in a loop calling a tool with missing or wrong arguments. "
-                        "STOP calling the same tool. "
-                        "If you are trying to output documentation or code to the user, just provide it directly in plain text/Markdown right now."
-                    )
+                    # Detect user language from recent messages for better compliance
+                    lang = self._detect_language()
+                    if lang == "zh":
+                        warning_msg = (
+                            "系统警告：你多次调用工具失败，似乎陷入了死循环。"
+                            "请立即停止重复调用同一个工具。"
+                            "如果你是想向用户输出代码或文档，请直接用 Markdown 格式输出，不要再调用任何工具。"
+                        )
+                    else:
+                        warning_msg = (
+                            "SYSTEM WARNING: You have repeatedly failed to call tools correctly. "
+                            "You seem to be stuck in a loop calling a tool with missing or wrong arguments. "
+                            "STOP calling the same tool. "
+                            "If you are trying to output documentation or code to the user, just provide it directly in plain text/Markdown right now."
+                        )
                     # 注入 system 消息避免破坏 assistant→tool→assistant 的合法序列
                     self.messages.append({"role": "system", "content": warning_msg})
                     consecutive_errors = 0  # 重置计数，给它一次听话的机会
 
                     if self.debug:
+                        from rich.console import Console
+                        console = Console()
                         console.print(
                             f"\n[bold red]>>> System injected circuit-breaker warning due to loop.[/bold red]")
             else:
@@ -225,6 +248,25 @@ class Agent:
                     ).start()
 
         return "(reached maximum tool-call rounds)"
+
+    @staticmethod
+    def _is_tool_error(result: str) -> bool:
+        """Check if a tool result indicates an error (first line starts with 'Error:')."""
+        return result.splitlines()[0].startswith("Error:") if result else False
+
+    def _detect_language(self) -> str:
+        """Detect user's language from recent messages. Returns 'zh' or 'en'."""
+        # Check last 6 user messages for Chinese characters
+        zh_count = 0
+        checked = 0
+        for m in reversed(self.messages):
+            if m.get("role") == "user" and m.get("content"):
+                content = m["content"]
+                zh_count += sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+                checked += 1
+                if checked >= 6:
+                    break
+        return "zh" if zh_count > 5 else "en"
 
     def _exec_tool(self, tc) -> str:
         """Execute a single tool call, returning the result string."""
@@ -413,7 +455,7 @@ class Agent:
         # Don't reset session_id or token stats - keep for the session lifetime
 
     @staticmethod
-    def _run_async(coro):
+    def _run_async(coro, timeout: int = 30):
         """Run an async coroutine safely, handling existing event loops."""
         try:
             loop = asyncio.get_running_loop()
@@ -423,6 +465,6 @@ class Agent:
             # Already in an event loop: schedule and wait synchronously
             import concurrent.futures
             future = asyncio.run_coroutine_threadsafe(coro, loop)
-            future.result(timeout=10)
+            future.result(timeout=timeout)
         else:
             asyncio.run(coro)

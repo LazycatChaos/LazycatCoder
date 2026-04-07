@@ -20,17 +20,21 @@ _cwd: Optional[str] = None
 
 # 危险命令模式（已增加 Windows/PowerShell 的高危操作拦截）
 _DANGEROUS_PATTERNS = [
-    # Linux / Bash
+    # Linux / Bash — 递归删除（任何路径，不限于根目录）
+    (r"\brm\s+(-\w*)?-rf\s", "force recursive delete (rm -rf)"),
+    (r"\brm\s+-r\s", "recursive delete (rm -r)"),
     (r"\brm\s+(-\w*)?-r\w*\s+(/|~|\$HOME)", "recursive delete on home/root"),
-    (r"\brm\s+(-\w*)?-rf\s", "force recursive delete"),
+    # Windows / PowerShell — 递归删除（任何路径）
+    (r"(?i)\bRemove-Item\s+.*-Recurse", "recursive delete (Remove-Item -Recurse)"),
+    (r"(?i)\brmdir\s+/s", "recursive delete (rmdir /s)"),
+    (r"(?i)\bdel\s+/s", "recursive delete (del /s)"),
+    # 文件系统破坏
     (r"\bmkfs\b", "format filesystem"),
     (r"\bdd\s+.*of=/dev/", "raw disk write"),
     (r">\s*/dev/sd[a-z]", "overwrite block device"),
     (r"\bchmod\s+(-R\s+)?777\s+/", "chmod 777 on root"),
     (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
-    # Windows / PowerShell 专属高危
-    (r"(?i)\bRemove-Item\s+-Recurse\s+-Force\s+[A-Z]:\\", "recursive delete on root drive"),
-    (r"(?i)\bdel\s+/s\s+/q\s+[A-Z]:\\", "force recursive delete on root drive"),
+    # Windows — 格式化
     (r"(?i)\bformat\s+[A-Z]:", "format drive"),
 ]
 

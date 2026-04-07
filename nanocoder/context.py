@@ -163,17 +163,17 @@ class ContextManager:
 
     @staticmethod
     def _snip_tool_outputs(messages: list[dict]) -> bool:
-        """Layer 1: Truncate tool results over 1500 chars to their first/last lines.
+        """Layer 1: Truncate tool results over 4000 chars to their first/last lines.
 
-        This mirrors Claude Code's HISTORY_SNIP which replaces old tool outputs
-        with a one-line summary to reclaim context space.
+        Threshold raised from 1500 to 4000 to avoid snipping medium-sized
+        source files (a ~100-line Python file is already ~3000 chars).
         """
         changed = False
         for m in messages:
             if m.get("role") != "tool":
                 continue
             content = m.get("content", "")
-            if len(content) <= 1500:
+            if len(content) <= 4000:
                 continue
             lines = content.splitlines()
             if len(lines) <= 6:
