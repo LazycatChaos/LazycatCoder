@@ -133,9 +133,8 @@ class Agent:
             )
             
             # Track token usage
-            if hasattr(resp, 'usage') and resp.usage:
-                self._total_tokens_input += resp.usage.get('input_tokens', 0)
-                self._total_tokens_output += resp.usage.get('output_tokens', 0)
+            self._total_tokens_input += resp.prompt_tokens
+            self._total_tokens_output += resp.completion_tokens
 
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
