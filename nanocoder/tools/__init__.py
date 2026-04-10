@@ -13,6 +13,7 @@ from .agent import AgentTool
 from .todo import TodoWriteTool
 from .web_search import WebSearchTool
 from .fetch import FetchTool
+from .project_structure import ProjectStructureTool
 
 
 class ToolRegistry:
@@ -36,6 +37,7 @@ class ToolRegistry:
             TodoWriteTool(),
             WebSearchTool(),  # Requires TAVILY_API_KEY
             FetchTool(),
+            ProjectStructureTool(),
         ]
         for tool in default_tools:
             self.register(tool)
