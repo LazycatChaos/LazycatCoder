@@ -41,6 +41,7 @@ class Agent:
         session_id: Optional[str] = None,
         auto_save: bool = True,
         workdir: Optional[str] = None,
+        venv_path: Optional[str] = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -51,6 +52,9 @@ class Agent:
         
         # Working directory (default: current directory)
         self.workdir = workdir if workdir is not None else os.getcwd()
+        
+        # Virtual environment path
+        self.venv_path = venv_path
         
         # System prompt with workdir
         self._system = system_prompt(self.tools, self.workdir)
@@ -78,10 +82,14 @@ class Agent:
         for t in self.tools:
             if hasattr(t, 'workdir'):
                 t.workdir = self.workdir
+            if hasattr(t, 'venv_path') and self.venv_path:
+                t.venv_path = self.venv_path
 
         # Lock to protect messages during background autocompact
         self._messages_lock = threading.Lock()
         self._autocompact_running = False
+        # Cancellation flag (set by Ctrl+C or /cancel)
+        self._cancelled = False
 
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages

@@ -2,12 +2,98 @@
 
 import os
 import platform
+from pathlib import Path
+
+
+def _get_project_tree(root: str, max_depth: int = 4) -> str:
+    """Generate a tree view of the project directory structure.
+
+    This is a lightweight version of the project_structure tool,
+    used to seed the system prompt with project context.
+    """
+    root_path = Path(root).resolve()
+    if not root_path.is_dir():
+        return ""
+
+    _SKIP_DIRS = {
+        ".git", "__pycache__", ".venv", "venv", "node_modules",
+        ".idea", ".vscode", ".mypy_cache", ".pytest_cache",
+        ".tox", ".eggs", "dist", "build",
+    }
+
+    lines: list[str] = []
+
+    def _build_tree(directory: Path, prefix: str, is_last: bool, depth: int):
+        connector = "└── " if is_last else "├── "
+        lines.append(f"{prefix}{connector}{directory.name}/")
+
+        if depth <= 0:
+            return
+
+        try:
+            entries = sorted(
+                directory.iterdir(),
+                key=lambda p: (not p.is_dir(), p.name.lower()),
+            )
+        except PermissionError:
+            lines.append(f"{prefix}{'    ' if is_last else '│   '}[Permission denied]")
+            return
+
+        filtered = [
+            e for e in entries
+            if not e.name.startswith(".") and not (e.is_dir() and e.name in _SKIP_DIRS)
+        ]
+
+        new_prefix = prefix + ("    " if is_last else "│   ")
+        for i, entry in enumerate(filtered):
+            is_last_entry = i == len(filtered) - 1
+            if entry.is_dir():
+                _build_tree(entry, new_prefix, is_last_entry, depth - 1)
+            else:
+                connector = "└── " if is_last_entry else "├── "
+                lines.append(f"{new_prefix}{connector}{entry.name}")
+
+    # Start from root (root itself is not printed, only its children)
+    try:
+        entries = sorted(
+            root_path.iterdir(),
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
+    except PermissionError:
+        return ""
+
+    filtered = [
+        e for e in entries
+        if not e.name.startswith(".") and not (e.is_dir() and e.name in _SKIP_DIRS)
+    ]
+
+    for i, entry in enumerate(filtered):
+        is_last_entry = i == len(filtered) - 1
+        if entry.is_dir():
+            _build_tree(entry, "", is_last_entry, max_depth - 1)
+        else:
+            connector = "└── " if is_last_entry else "├── "
+            lines.append(f"{connector}{entry.name}")
+
+    if not lines:
+        return ""
+
+    header = f"Project structure: {root_path}\n"
+    return header + "\n".join(lines)
 
 
 def system_prompt(tools, workdir: str = None) -> str:
     cwd = workdir if workdir is not None else os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
+    project_tree = _get_project_tree(cwd)
+
+    project_tree_section = f"""
+# Project Structure
+```
+{project_tree}
+```
+""" if project_tree else ""
 
     return f"""\
 You are NanoCoder, an AI coding assistant running in the user's terminal.
@@ -17,7 +103,7 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 - Working directory: {cwd}
 - OS: {uname.system} {uname.release} ({uname.machine})
 - Python: {platform.python_version()}
-
+{project_tree_section}
 # Tools
 {tool_list}
 

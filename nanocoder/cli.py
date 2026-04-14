@@ -32,6 +32,7 @@ def _parse_args():
     p.add_argument("--debug", action="store_true", help="Enable debug mode with verbose output")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("-w", "--workdir", help="Working directory (default: current directory)")
+    p.add_argument("--venv", help="Virtual environment path (auto-detected if not specified)")
     return p.parse_args()
 
 
@@ -46,6 +47,8 @@ def main():
         config.base_url = args.base_url
     if args.api_key:
         config.api_key = args.api_key
+    if args.venv:
+        config.venv_path = args.venv
 
     if not config.api_key:
         console.print("[red bold]No API key found.[/]")
@@ -74,11 +77,18 @@ def main():
     
     # Determine working directory: CLI arg > current directory
     workdir = args.workdir if args.workdir else os.getcwd()
+    
+    # Resolve virtual environment
+    venv_path = config.resolve_venv(workdir)
+    if venv_path and config.debug:
+        console.print(f"[dim]Using virtual environment: {venv_path}[/dim]")
+    
     agent = Agent(
         llm=llm,
         max_context_tokens=config.max_context_tokens,
         debug=args.debug,
         workdir=workdir,
+        venv_path=venv_path,
     )
 
     # resume saved session
@@ -147,6 +157,10 @@ def _repl(agent: Agent, config: Config):
             agent.reset()
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
+        if user_input == "/cancel":
+            agent._cancelled = True
+            console.print("[yellow]Cancelling current operation...[/yellow]")
+            continue
         if user_input == "/debug":
             config.debug = not config.debug
             agent.debug = config.debug
@@ -170,6 +184,24 @@ def _repl(agent: Agent, config: Config):
                     console.print(f"Workdir set to [cyan]{new_dir}[/cyan]")
                 else:
                     console.print(f"[red]Directory not found: {new_dir}[/red]")
+            continue
+        if user_input.startswith("/venv"):
+            parts = user_input.split(None, 1)
+            if len(parts) < 2:
+                venv = agent.venv_path
+                console.print(f"Current venv: [cyan]{venv or '(none, auto-detect)'}[/cyan]")
+            else:
+                new_venv = os.path.abspath(os.path.expanduser(parts[1]))
+                from pathlib import Path
+                scripts_dir = "Scripts" if os.name == "nt" else "bin"
+                if (Path(new_venv) / scripts_dir).exists():
+                    agent.venv_path = new_venv
+                    for t in agent.tools:
+                        if hasattr(t, 'venv_path'):
+                            t.venv_path = new_venv
+                    console.print(f"Venv set to [cyan]{new_venv}[/cyan]")
+                else:
+                    console.print(f"[red]Not a valid virtual environment: {new_venv}[/red]")
             continue
         if user_input == "/tokens":
             p = agent.llm.total_prompt_tokens
@@ -270,10 +302,12 @@ def _show_help():
         "[bold]Commands:[/bold]\n"
         "  /help          Show this help\n"
         "  /reset         Clear conversation history\n"
+        "  /cancel        Cancel current tool execution\n"
         "  /model <name>  Switch model mid-conversation\n"
         "  /timeout <sec> Set request timeout (default: 120s)\n"
         "  /debug         Toggle debug mode\n"
         "  /workdir [dir] Show or change working directory\n"
+        "  /venv [path]   Show or set virtual environment\n"
         "  /tokens        Show token usage (total)\n"
         "  /usage         Show detailed usage report (per-round avg, context %)\n"
         "  /compact       Compress conversation context\n"
@@ -285,6 +319,6 @@ def _show_help():
     ))
 
 
-def _brief(kwargs: dict, maxlen: int = 300) -> str:
-    s = ", ".join(f"{k}={repr(v)[:100]}" for k, v in kwargs.items())
+def _brief(kwargs: dict, maxlen: int = 500) -> str:
+    s = ", ".join(f"{k}={repr(v)[:200]}" for k, v in kwargs.items())
     return s[:maxlen] + ("..." if len(s) > maxlen else "")
