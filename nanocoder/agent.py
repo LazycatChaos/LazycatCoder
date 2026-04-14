@@ -299,16 +299,29 @@ class Agent:
             
             if self.debug:
                 from rich.console import Console
+                from rich.panel import Panel
                 console = Console()
-                result_preview = result[:500] + "..." if len(result) > 500 else result
-                # Replace newlines for cleaner display
-                result_preview = result_preview.replace('\n', '\\n')
-                console.print(f"[dim]Result ({len(result)} chars):[/dim] {result_preview}")
+                # Show full result in a panel for readability
+                result_display = result if len(result) <= 200 else result[:200] + f"\n\n... ({len(result)} total chars, truncated)"
+                console.print(Panel(
+                    result_display,
+                    title=f"[green]✓ {tc.name}[/green] [dim]({len(result)} chars)[/dim]",
+                    border_style="green",
+                ))
             
             return result
         except Exception as e:
             # Log error with watermark for turn-scoped isolation
             self._log_error(tc.name, tc.arguments, e)
+            if self.debug:
+                from rich.console import Console
+                from rich.panel import Panel
+                console = Console()
+                console.print(Panel(
+                    str(e),
+                    title=f"[red]✗ {tc.name} (Error)[/red]",
+                    border_style="red",
+                ))
             return f"Error executing {tc.name}: {e}"
 
     def _log_error(self, tool_name: str, arguments: dict, error: Exception):

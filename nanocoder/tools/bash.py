@@ -7,6 +7,7 @@ Claude Code's BashTool is 1,143 lines. This is the distilled version:
 - Working directory tracking (cd awareness)
 """
 
+import base64
 import os
 import re
 import subprocess
@@ -18,25 +19,29 @@ from .base import Tool, ValidationResult
 # 跨命令跟踪当前工作目录
 _cwd: Optional[str] = None
 
-# 危险命令模式（已增加 Windows/PowerShell 的高危操作拦截）
+# 危险命令模式
 _DANGEROUS_PATTERNS = [
-    # Linux / Bash — 递归删除（任何路径，不限于根目录）
+    # Linux / Bash
     (r"\brm\s+(-\w*)?-rf\s", "force recursive delete (rm -rf)"),
     (r"\brm\s+-r\s", "recursive delete (rm -r)"),
     (r"\brm\s+(-\w*)?-r\w*\s+(/|~|\$HOME)", "recursive delete on home/root"),
-    # Windows / PowerShell — 递归删除（任何路径）
-    (r"(?i)\bRemove-Item\s+.*-Recurse", "recursive delete (Remove-Item -Recurse)"),
-    (r"(?i)\brmdir\s+/s", "recursive delete (rmdir /s)"),
-    (r"(?i)\bdel\s+/s", "recursive delete (del /s)"),
-    # 文件系统破坏
     (r"\bmkfs\b", "format filesystem"),
     (r"\bdd\s+.*of=/dev/", "raw disk write"),
     (r">\s*/dev/sd[a-z]", "overwrite block device"),
     (r"\bchmod\s+(-R\s+)?777\s+/", "chmod 777 on root"),
     (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
-    # Windows — 格式化
+
+    # Windows / PowerShell
+    (r"(?i)\bRemove-Item\s+.*-Recurse", "recursive delete (Remove-Item -Recurse)"),
+    (r"(?i)\brmdir\s+/s", "recursive delete (rmdir /s)"),
+    (r"(?i)\bdel\s+/s", "recursive delete (del /s)"),
     (r"(?i)\bformat\s+[A-Z]:", "format drive"),
+    (r"(?i)\bClear-Disk\b", "wipe disk"),
+    (r"(?i)\bInitialize-Disk\b", "initialize disk"),
 ]
+
+# 用于精准捕获实际工作目录的隐形标记
+_CWD_MARKER = f"__CWD_MARKER_{os.getpid()}__"
 
 
 class BashTool(Tool):
@@ -48,22 +53,18 @@ class BashTool(Tool):
     )
 
     search_hint = "run shell commands"
-    
-    # Optional working directory (set by Agent if specified)
+
     workdir: Optional[str] = None
-    # Optional virtual environment path (auto-activated before commands)
     venv_path: Optional[str] = None
-    # Cancellation callback (set by Agent)
     _is_cancelled: Optional[Callable[[], bool]] = None
 
     @property
     def is_read_only(self) -> bool:
-        # Conservative: bash can modify state, so default to False
         return False
 
     @property
     def is_concurrency_safe(self) -> bool:
-        return False  # shell commands can have side effects
+        return False
 
     parameters = {
         "type": "object",
@@ -102,65 +103,73 @@ class BashTool(Tool):
 
         cwd = self.workdir or _cwd or os.getcwd()
 
-        # 检测交互式命令（会卡住的命令）
         interactive_warning = self._check_interactive(command)
         if interactive_warning:
             return (
-                f"Error: 检测到交互式命令，不适合在 bash 工具中运行。\n"
+                f"Error: 检测到交互式命令，不适合在无头工具中运行。\n"
                 f"命令: {command}\n"
                 f"原因: {interactive_warning}\n"
-                f"建议: 使用 -c 参数传递代码/命令，例如: python -c \"print('hello')\" 或 python manage.py shell -c \"...\""
+                f"建议: 使用 -c 参数传递代码或添加 non-interactive 标志。"
             )
 
-        # 如果有虚拟环境，在执行命令前添加激活前缀
+        # 1. 注入虚拟环境激活
         command = self._prepend_venv_activation(command, cwd)
 
-        # Windows 下使用 PowerShell 替代 bash
-        if os.name == "nt":
-            # 优先寻找 PowerShell Core (pwsh)，否则用自带的 powershell
+        # 2. 判断环境并注入 CWD 跟踪标记 (修复第 6 点 cmd.exe 兼容性)
+        is_windows = os.name == "nt"
+        if is_windows:
             ps_path = shutil.which("pwsh") or shutil.which("powershell")
             if ps_path:
-                # 使用 -NoProfile 提升启动速度
-                command = f'"{ps_path}" -NoProfile -NonInteractive -Command {command}'
+                # PowerShell 语法
+                command = f"{command}\nWrite-Output '{_CWD_MARKER}:$PWD'"
+                encoded = base64.b64encode(command.encode("utf-16-le")).decode()
+                # 修复第 4 点：将 ExecutionPolicy 放到解释器参数中，更安全
+                cmd_list = [ps_path, "-ExecutionPolicy", "Bypass", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                            encoded]
+            else:
+                # CMD 语法
+                command = f"{command}\necho {_CWD_MARKER}:%CD%"
+                cmd_list = ["cmd.exe", "/c", command]
+        else:
+            # Bash 语法
+            command = f"{command}\necho '{_CWD_MARKER}:'$PWD"
+            cmd_list = ["/bin/bash", "-c", command]
 
         try:
-            # Windows 中文环境下 PowerShell 默认输出 GBK 编码，
-            # 直接指定 encoding="utf-8" 会导致中文乱码。
-            # 策略：先以 bytes 捕获，再智能解码。
-            # 使用 Popen + communicate 替代 run，以便超时后能 kill 整个进程树
             proc = subprocess.Popen(
-                command,
-                shell=True,
+                cmd_list,
+                shell=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if is_windows else 0,
             )
 
             try:
-                stdout, stderr = proc.communicate(timeout=timeout)
+                stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                # 超时后 kill 整个进程树（防止孤儿进程）
                 _kill_process_tree(proc.pid)
                 proc.wait()
                 return f"Error: timed out after {timeout}s (process killed)"
 
-            stdout = _decode_output(stdout)
-            stderr = _decode_output(stderr)
+            stdout = _decode_output(stdout_bytes)
+            stderr = _decode_output(stderr_bytes)
 
-            # 如果执行成功，尝试更新工作目录
-            if proc.returncode == 0:
-                _update_cwd(command, cwd)
+            # 3. 提取并更新真实工作目录 (提取发生在截断前，不用担心长输出导致标记丢失)
+            stdout, extracted_cwd = self._extract_and_update_cwd(stdout)
+            if extracted_cwd:
+                _cwd = extracted_cwd
 
-            out = stdout or ""
-            if stderr:
-                out += f"\n[stderr]\n{stderr}"
+            out = stdout.strip()
+            if stderr.strip():
+                if out:
+                    out += f"\n\n[stderr]\n{stderr.strip()}"
+                else:
+                    out = f"[stderr]\n{stderr.strip()}"
+
             if proc.returncode != 0:
-                out += f"\n[exit code: {proc.returncode}]"
+                out += f"\n\n[Process exited with code {proc.returncode}]"
 
-            # 截断处理 (保护 Context Length)
-            # keep head + tail to preserve the most useful info
-            # Claude Code uses 15K limit with 6K head + 3K tail
             if len(out) > 15_000:
                 head_size = 6000
                 tail_size = 3000
@@ -170,24 +179,30 @@ class BashTool(Tool):
                         + out[-tail_size:]
                 )
 
-            return out.strip() or "(no output)"
-        except subprocess.TimeoutExpired:
-            return f"Error: timed out after {timeout}s"
-        except Exception as e:
-            return f"Error running command: {e}"
+            return out.strip() or "(Command completed successfully, no output)"
 
-    def get_activity_description(self, kwargs: dict) -> str:
-        """Get a short description of what the tool is doing."""
-        command = kwargs.get("command", "")
-        # Extract first few words for brevity
-        words = command.split()[:5]
-        cmd_preview = " ".join(words)
-        if len(command) > len(cmd_preview):
-            cmd_preview += "..."
-        return f"Running: {cmd_preview}"
+        except Exception as e:
+            return f"Error running command: {str(e)}"
+
+    def _extract_and_update_cwd(self, stdout: str) -> tuple[str, Optional[str]]:
+        if not stdout:
+            return stdout, None
+
+        # 修复第 5 点：将 \r?\n? 加入正则，完美吞掉整行，避免残留空行或误删正常空行
+        pattern = re.compile(rf"^{_CWD_MARKER}:(?P<pwd>.*)\r?\n?", re.MULTILINE)
+        match = pattern.search(stdout)
+
+        extracted_cwd = None
+        if match:
+            extracted_pwd = match.group("pwd").strip()
+            if os.path.isdir(extracted_pwd):
+                extracted_cwd = extracted_pwd
+            # 直接替换，不再使用后置的 strip()
+            stdout = pattern.sub("", stdout)
+
+        return stdout, extracted_cwd
 
     def _prepend_venv_activation(self, command: str, cwd: str) -> str:
-        """在命令前添加虚拟环境激活逻辑（仅当命令涉及 Python 时）。"""
         venv = self.venv_path
         if not venv:
             return command
@@ -196,21 +211,16 @@ class BashTool(Tool):
         if not venv_path.exists():
             return command
 
-        # 判断命令是否需要 Python 环境
         python_keywords = ["python", "pip", "pytest", "django", "manage.py", "flask", "uvicorn", "gunicorn"]
-        needs_python = any(kw in command.lower() for kw in python_keywords)
-        if not needs_python:
+        if not any(kw in command.lower() for kw in python_keywords):
             return command
 
-        # 构建激活命令
         if os.name == "nt":
-            # Windows: 使用 Activate.ps1
             activate_script = venv_path / "Scripts" / "Activate.ps1"
             if activate_script.exists():
-                # PowerShell: 先激活，再执行命令
+                # 第 4 点修改：移除了 Set-ExecutionPolicy，因为我们已经在 Popen 参数里加了
                 return f"& '{activate_script}'; {command}"
         else:
-            # Linux/macOS: 使用 activate
             activate_script = venv_path / "bin" / "activate"
             if activate_script.exists():
                 return f"source '{activate_script}' && {command}"
@@ -308,20 +318,3 @@ def _kill_process_tree(pid: int):
                 os.kill(pid, signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 pass  # Already dead
-
-
-def _update_cwd(command: str, current_cwd: str):
-    """Track directory changes from cd commands (supports Bash and PowerShell)."""
-    global _cwd
-    # PowerShell 常用 ';' 或 '&&' 连接命令
-    parts = re.split(r'&&|;', command)
-    for part in parts:
-        part = part.strip()
-        # 匹配 cd, Set-Location, sl, chdir 等
-        match = re.match(r'^(cd|Set-Location|sl|chdir)\s+(.+)', part, re.IGNORECASE)
-        if match:
-            target = match.group(2).strip().strip("'\"")
-            if target:
-                new_dir = os.path.normpath(os.path.join(current_cwd, os.path.expanduser(target)))
-                if os.path.isdir(new_dir):
-                    _cwd = new_dir
