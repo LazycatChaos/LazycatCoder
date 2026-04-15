@@ -54,7 +54,7 @@ def test_bash_basic():
 def test_bash_exit_code():
     bash = get_tool("bash")
     r = bash.execute(command="exit 42")
-    assert "exit code: 42" in r
+    assert "exited with code 42" in r
 
 
 def test_bash_timeout():

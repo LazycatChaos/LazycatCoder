@@ -154,17 +154,9 @@ class Agent:
                     console.print(f"\n[bold green]>>> LLM responded with text[/bold green] [dim]({len(resp.content)} chars)[/dim]")
                     console.print(f"[dim]{content_preview}[/dim]")
                 
-                # Record assistant response (non-critical, lazy flush)
+                # Record assistant response (non-critical, fire-and-forget)
                 if self.auto_save and self._session_manager:
-                    try:
-                        self._run_async(self._session_manager.record_message(
-                            self.messages, self.llm.model, is_critical=False
-                        ))
-                    except Exception as e:
-                        if self.debug:
-                            from rich.console import Console
-                            console = Console()
-                            console.print(f"[yellow]⚠ Session save failed: {e}[/yellow]")
+                    self._fire_and_forget_save()
                 
                 return resp.content
 
@@ -206,6 +198,11 @@ class Agent:
                     # Check if tool returned an error
                     if self._is_tool_error(result):
                         has_error_in_this_round = True
+
+            # Auto-save after tool results (non-critical, fire-and-forget)
+            # This prevents losing tool outputs if the process crashes mid-session
+            if self.auto_save and self._session_manager:
+                self._fire_and_forget_save()
 
             # 新增：防死循环 / 熔断机制核心逻辑
             if has_error_in_this_round:
@@ -467,6 +464,16 @@ class Agent:
             save_session(self.messages, self.llm.model, self.session_id)
         return self.session_id
 
+    def flush_session(self):
+        """Flush any pending async saves before exit."""
+        if self.auto_save and self._session_manager:
+            try:
+                self._run_async(self._session_manager.flush(
+                    self.messages, self.llm.model
+                ), timeout=10)
+            except Exception:
+                pass  # Don't crash on exit if flush fails
+
     def reset(self):
         """Clear conversation history."""
         self.messages.clear()
@@ -474,6 +481,22 @@ class Agent:
         self._error_watermark = 0
         self._round_count = 0
         # Don't reset session_id or token stats - keep for the session lifetime
+
+    def _fire_and_forget_save(self):
+        """Schedule a non-critical session save without blocking.
+        
+        Uses a background thread so the main loop never waits on disk I/O.
+        """
+        if not self.auto_save or not self._session_manager:
+            return
+        def _save_bg():
+            try:
+                self._run_async(self._session_manager.record_message(
+                    self.messages, self.llm.model, is_critical=False
+                ))
+            except Exception:
+                pass  # Silent failure for non-critical saves
+        threading.Thread(target=_save_bg, daemon=True).start()
 
     @staticmethod
     def _run_async(coro, timeout: int = 30):

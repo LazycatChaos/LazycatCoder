@@ -13,7 +13,7 @@ from prompt_toolkit.history import FileHistory
 from .agent import Agent
 from .llm import LLM
 from .config import Config
-from .session import save_session, load_session, list_sessions
+from .session import load_session, list_sessions
 from . import __version__
 
 console = Console()
@@ -141,6 +141,7 @@ def _repl(agent: Agent, config: Config):
         try:
             user_input = pt_prompt("You > ", history=history).strip()
         except (EOFError, KeyboardInterrupt):
+            agent.flush_session()
             console.print("\nBye!")
             break
 
@@ -149,11 +150,19 @@ def _repl(agent: Agent, config: Config):
 
         # built-in commands
         if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
+            agent.flush_session()
             break
         if user_input == "/help":
             _show_help()
             continue
         if user_input == "/reset":
+            # Auto-save current session before resetting (if there's anything to save)
+            if agent.messages:
+                try:
+                    sid = agent.save_session()
+                    console.print(f"[dim]Current session saved: {sid}[/dim]")
+                except Exception as e:
+                    console.print(f"[yellow]⚠ Failed to save before reset: {e}[/yellow]")
             agent.reset()
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
@@ -260,7 +269,7 @@ def _repl(agent: Agent, config: Config):
                 console.print(f"[dim]Nothing to compress ({before} tokens, {len(agent.messages)} messages)[/dim]")
             continue
         if user_input == "/save":
-            sid = save_session(agent.messages, config.model)
+            sid = agent.save_session()
             console.print(f"[green]Session saved: {sid}[/green]")
             console.print(f"Resume with: nanocoder -r {sid}")
             continue
@@ -301,7 +310,7 @@ def _show_help():
     console.print(Panel(
         "[bold]Commands:[/bold]\n"
         "  /help          Show this help\n"
-        "  /reset         Clear conversation history\n"
+        "  /reset         Save & clear conversation history\n"
         "  /cancel        Cancel current tool execution\n"
         "  /model <name>  Switch model mid-conversation\n"
         "  /timeout <sec> Set request timeout (default: 120s)\n"
