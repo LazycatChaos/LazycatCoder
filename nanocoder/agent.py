@@ -35,7 +35,7 @@ class Agent:
         self,
         llm: LLM,
         tools: list[Tool] | None = None,
-        max_context_tokens: int = 128_000,
+        max_context_tokens: int = 200_000,
         max_rounds: int = 50,
         debug: bool = False,
         session_id: Optional[str] = None,
@@ -390,29 +390,21 @@ class Agent:
             snapshot = list(self.messages)  # shallow copy of list
             self._messages_lock.release()
 
-            # Step 2: summarize the snapshot (no lock held, LLM can take time)
+            # Step 2: delegate to context.autocompact (handles all guard checks)
             old_count = len(snapshot)
-            summary = self.context._get_summary(snapshot, self.llm)
-            if not summary:
-                return
+            compressed = self.context.autocompact(snapshot, self.llm)
+            if not compressed:
+                return  # Not enough history or already compressed recently
 
-            # Step 3: rebuild compacted messages
-            keep_recent = 12
-            tail = snapshot[-keep_recent:] if len(snapshot) > keep_recent else snapshot
-            compacted = [
-                {"role": "user", "content": f"[Auto-compacted context summary]\n{summary}"},
-                {"role": "assistant", "content": "Context has been summarized. Ready to continue."},
-            ] + tail
-
-            # Step 4: swap under lock
+            # Step 3: swap under lock
             acquired = self._messages_lock.acquire(timeout=5)
             if not acquired:
                 return  # Main loop is busy, discard result
-            self.messages[:] = compacted  # in-place replacement
+            self.messages[:] = snapshot  # in-place replacement
             self.context._last_autocompact_tokens = self.context.token_usage(self.messages)
             self._messages_lock.release()
 
-            # Step 5: save after successful compaction
+            # Step 4: save after successful compaction
             if self.auto_save and self._session_manager:
                 try:
                     self._run_async(self._session_manager.record_message(

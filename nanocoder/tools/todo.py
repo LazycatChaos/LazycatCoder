@@ -25,7 +25,10 @@ class TodoWriteTool(Tool):
         "This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user. "
         "Use proactively for: (1) Complex multi-step tasks (3+ steps), (2) Non-trivial tasks requiring planning, "
         "(3) When user explicitly requests todo list, (4) After receiving new instructions. "
-        "NOT for single trivial tasks that can be completed in one step."
+        "NOT for single trivial tasks that can be completed in one step.\n\n"
+        "IMPORTANT: When context gets compressed, the todo list in recent messages is the ONLY reliable "
+        "record of task progress. Always call this tool after completing a step to keep the latest state "
+        "visible in context. Each call replaces the entire list — include ALL todos with updated statuses."
     )
 
     search_hint = "manage the session task checklist"

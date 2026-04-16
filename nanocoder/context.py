@@ -162,7 +162,7 @@ class ContextManager:
         return compressed
 
     def autocompact(self, messages: list[dict], llm: LLM | None = None,
-                    min_turns: int = 8, keep_recent: int = 12) -> bool:
+                    min_turns: int = 8, keep_recent: int = 15) -> bool:
         """Layer 4: Background periodic compaction.
 
         This mirrors Claude Code's Autocompact feature which runs silently
@@ -326,6 +326,10 @@ class ContextManager:
                                 "Compress this conversation into a brief summary. "
                                 "Preserve: file paths edited, key decisions made, "
                                 "errors encountered, current task state. "
+                                "CRITICAL: If the conversation contains any todo_write tool calls, "
+                                "you MUST include the latest todo list with each item's status "
+                                "(pending/in_progress/completed). This is the only way to preserve "
+                                "task progress across context compression. "
                                 "Drop: verbose command output, code listings, "
                                 "redundant back-and-forth."
                             ),
@@ -337,7 +341,7 @@ class ContextManager:
             except Exception:
                 pass
 
-        # fallback: extract key lines
+        # fallback: extract key info including todo state
         return self._extract_key_info(messages)
 
     @staticmethod
@@ -347,16 +351,19 @@ class ContextManager:
             role = m.get("role", "?")
             text = m.get("content", "") or ""
             if text:
-                parts.append(f"[{role}] {text[:400]}")
+                # Tool results need more context for quality summaries
+                limit = 2000 if role == "tool" else 400
+                parts.append(f"[{role}] {text[:limit]}")
         return "\n".join(parts)
 
     @staticmethod
     def _extract_key_info(messages: list[dict]) -> str:
-        """Fallback: extract file paths, errors, and decisions without LLM."""
+        """Fallback: extract file paths, errors, decisions, and todo state without LLM."""
         import re
         files_seen = set()
         errors = []
         decisions = []
+        todo_state = []
 
         for m in messages:
             text = m.get("content", "") or ""
@@ -367,8 +374,16 @@ class ContextManager:
             for line in text.splitlines():
                 if 'error' in line.lower() or 'Error' in line:
                     errors.append(line.strip()[:150])
+            # extract todo state from todo_write tool results
+            if m.get("role") == "tool" and "Todos updated" in text:
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith(("⏳", "🔄", "✅")) or ("[pending]" in line or "[in_progress]" in line or "[completed]" in line):
+                        todo_state.append(line)
 
         parts = []
+        if todo_state:
+            parts.append("Current task list:\n" + "\n".join(todo_state))
         if files_seen:
             parts.append(f"Files touched: {', '.join(sorted(files_seen)[:20])}")
         if errors:
