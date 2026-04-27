@@ -36,22 +36,25 @@ class GrepTool(Tool):
         return True
 
     parameters = {
-        # (保持原样，与你的参数字典完全相同)
         "type": "object",
         "properties": {
-            "pattern": {"type": "string"},
-            "path": {"type": "string"},
-            "glob": {"type": "string"},
-            "output_mode": {"type": "string", "enum": ["content", "files_with_matches", "count"]},
-            "-B": {"type": "integer"},
-            "-A": {"type": "integer"},
-            "-C": {"type": "integer"},
-            "-n": {"type": "boolean"},
-            "-i": {"type": "boolean"},
-            "type": {"type": "string"},
-            "head_limit": {"type": "integer"},
-            "offset": {"type": "integer"},
-            "multiline": {"type": "boolean"},
+            "pattern": {"type": "string", "description": "Regex pattern to search for"},
+            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)"},
+            "glob": {"type": "string", "description": "File glob pattern to filter files (e.g. '*.py')"},
+            "output_mode": {
+                "type": "string",
+                "enum": ["content", "files_with_matches", "count"],
+                "description": "Output mode: 'content' shows matching lines, 'files_with_matches' lists files, 'count' shows match counts"
+            },
+            "before_context": {"type": "integer", "description": "Number of lines to show before each match (-B)"},
+            "after_context": {"type": "integer", "description": "Number of lines to show after each match (-A)"},
+            "context": {"type": "integer", "description": "Number of lines to show before and after each match (-C)"},
+            "line_numbers": {"type": "boolean", "description": "Show line numbers in output (default: true)"},
+            "case_insensitive": {"type": "boolean", "description": "Case-insensitive search (-i)"},
+            "file_type": {"type": "string", "description": "File type to filter by (e.g. 'python', 'rust')"},
+            "head_limit": {"type": "integer", "description": "Maximum number of results to return (default: 250, 0 for unlimited)"},
+            "offset": {"type": "integer", "description": "Number of results to skip (for pagination)"},
+            "multiline": {"type": "boolean", "description": "Enable multiline mode"},
         },
         "required": ["pattern"],
     }
