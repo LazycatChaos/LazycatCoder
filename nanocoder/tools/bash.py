@@ -49,7 +49,9 @@ class BashTool(Tool):
     description = (
         "Execute a shell/PowerShell command. Returns stdout, stderr, and exit code. "
         "Use this for running tests, installing packages, git operations, etc. "
-        "Output is automatically truncated (head + tail preserved) for large outputs."
+        "Output is automatically truncated (head + tail preserved) for large outputs.\n\n"
+        "On Windows, PowerShell is used: use ';' to chain commands (not '&&'). "
+        "On Linux/macOS, bash is used: use '&&' to chain commands."
     )
 
     search_hint = "run shell commands"
