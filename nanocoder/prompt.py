@@ -1,15 +1,57 @@
 """System prompt - the instructions that turn an LLM into a coding agent."""
 
+import ast
 import os
 import platform
 from pathlib import Path
 
 
+# ---------------------------------------------------------------------------
+# AST-based Python symbol extraction
+# ---------------------------------------------------------------------------
+
+def _extract_python_symbols(file_path: Path) -> str:
+    """Extract class and function signatures from a Python file using ast.
+
+    Returns a compact multi-line string like:
+        class Foo:
+            def __init__(...)
+            def bar(...)
+        def standalone(...)
+    """
+    try:
+        source = file_path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(file_path))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return ""
+
+    lines: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            lines.append(f"  class {node.name}:")
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    lines.append(f"    def {sub.name}(...)")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            lines.append(f"  def {node.name}(...)")
+
+    return "\n".join(lines) if lines else ""
+
+
+# ---------------------------------------------------------------------------
+# Project tree with optional AST symbols
+# ---------------------------------------------------------------------------
+
+# Hard cap for the entire project tree string (chars).
+# When exceeded, .py files fall back to plain filenames.
+_AST_MAP_CHAR_LIMIT = 5000
+
+
 def _get_project_tree(root: str, max_depth: int = 4) -> str:
     """Generate a tree view of the project directory structure.
 
-    This is a lightweight version of the project_structure tool,
-    used to seed the system prompt with project context.
+    For .py files, appends extracted class/function signatures (AST map)
+    when the total output stays within the character budget.
     """
     root_path = Path(root).resolve()
     if not root_path.is_dir():
@@ -18,7 +60,7 @@ def _get_project_tree(root: str, max_depth: int = 4) -> str:
     _SKIP_DIRS = {
         ".git", "__pycache__", ".venv", "venv", "node_modules",
         ".idea", ".vscode", ".mypy_cache", ".pytest_cache",
-        ".tox", ".eggs", "dist", "build",
+        ".tox", ".eggs", "dist", "build", "experiment"
     }
 
     lines: list[str] = []
@@ -52,6 +94,22 @@ def _get_project_tree(root: str, max_depth: int = 4) -> str:
             else:
                 connector = "└── " if is_last_entry else "├── "
                 lines.append(f"{new_prefix}{connector}{entry.name}")
+                # Inject AST symbols for Python files (budget permitting)
+                if entry.suffix == ".py":
+                    _maybe_append_ast(entry, new_prefix)
+
+    def _maybe_append_ast(file_path: Path, prefix: str):
+        """Append AST symbols if we still have character budget."""
+        current_len = sum(len(l) for l in lines)
+        if current_len >= _AST_MAP_CHAR_LIMIT:
+            return
+        symbols = _extract_python_symbols(file_path)
+        if symbols:
+            # Check if adding symbols would exceed the budget
+            if current_len + len(symbols) > _AST_MAP_CHAR_LIMIT:
+                return
+            for sym_line in symbols.splitlines():
+                lines.append(f"{prefix}  {sym_line}")
 
     # Start from root (root itself is not printed, only its children)
     try:
@@ -74,6 +132,8 @@ def _get_project_tree(root: str, max_depth: int = 4) -> str:
         else:
             connector = "└── " if is_last_entry else "├── "
             lines.append(f"{connector}{entry.name}")
+            if entry.suffix == ".py":
+                _maybe_append_ast(entry, "")
 
     if not lines:
         return ""
@@ -127,4 +187,5 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 8. **Respect existing style.** Match the project's coding conventions.
 9. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
 10. **Direct Communication.** If the user asks you to "generate a document", "show me the code", "explain", or provide a summary, **output it directly in your chat response using Markdown**. Do NOT use `write_file` to save documents or answers unless the user explicitly instructs you to "save it to a file".
+11. **Project Planning.** For complex multi-step tasks, use `write_file` to create a plan file in the `.nanocoder/plans/` directory with a descriptive name (e.g., `.nanocoder/plans/auth_feature_plan.md`). The system will automatically place it in a session-specific subdirectory. Update it with `edit_file` as the project progresses. This helps maintain context across sessions.
 """

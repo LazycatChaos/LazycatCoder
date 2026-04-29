@@ -97,6 +97,10 @@ def main():
         if loaded:
             agent.messages, loaded_model, metadata = loaded
             console.print(f"[green]Resumed session: {args.resume}[/green]")
+            # Restore plan file binding
+            if metadata and metadata.active_plan_file:
+                agent._active_plan_file = metadata.active_plan_file
+                console.print(f"[dim]Plan file: {metadata.active_plan_file}[/dim]")
         else:
             console.print(f"[red]Session '{args.resume}' not found.[/red]")
             sys.exit(1)
@@ -282,6 +286,12 @@ def _repl(agent: Agent, config: Config):
                     s = s.to_dict()
                     console.print(f"  [cyan]{s['id']}[/cyan] ({s['model']}, {s['saved_at']}) {s['summary']}")
             continue
+        if user_input == "/plan":
+            if agent._active_plan_file:
+                console.print(f"Active plan: [cyan]{agent._active_plan_file}[/cyan]")
+            else:
+                console.print("[dim]No active plan file. Create one in .nanocoder/plans/ for complex tasks.[/dim]")
+            continue
 
         # call the agent
         streamed: list[str] = []
@@ -322,6 +332,7 @@ def _show_help():
         "  /compact       Compress conversation context\n"
         "  /save          Save session to disk\n"
         "  /sessions      List saved sessions\n"
+        "  /plan          Show active plan file\n"
         "  quit           Exit NanoCoder",
         title="NanoCoder Help",
         border_style="dim",

@@ -27,6 +27,33 @@ LAZY_FLUSH_INTERVAL = 2.0
 _write_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="session_writer")
 
 
+def _clean_surrogates(obj):
+    """Recursively remove surrogate characters (U+D800..U+DFFF) from strings.
+
+    Surrogates can sneak in when reading binary/non-UTF8 files — they are
+    valid Python str internals but break JSON UTF-8 encoding and cause
+    ``'utf-8' codec can't encode characters`` errors on every subsequent
+    session save/load until the corrupted session file is deleted.
+    """
+    if isinstance(obj, str):
+        return "".join(c for c in obj if not (0xD800 <= ord(c) <= 0xDFFF))
+    if isinstance(obj, dict):
+        return {k: _clean_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_surrogates(item) for item in obj]
+    return obj
+
+
+def _safe_read_json(path: Path) -> Optional[dict]:
+    """Read a JSON file, tolerating surrogate-encoded corruption."""
+    try:
+        # surrogatepass lets us read files that contain raw surrogate bytes
+        text = path.read_text(encoding="utf-8", errors="surrogatepass")
+        return json.loads(text)
+    except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError):
+        return None
+
+
 class SessionMetadata:
     """Metadata for a session, used for quick preview and search."""
     
@@ -41,6 +68,7 @@ class SessionMetadata:
         self.files_touched = data.get("files_touched", []) if data else []
         self.errors_seen = data.get("errors_seen", []) if data else []
         self.user_message_preview = data.get("user_message_preview", "") if data else ""
+        self.active_plan_file = data.get("active_plan_file") if data else None
     
     def to_dict(self) -> dict:
         return {
@@ -54,6 +82,7 @@ class SessionMetadata:
             "files_touched": self.files_touched,
             "errors_seen": self.errors_seen,
             "user_message_preview": self.user_message_preview,
+            "active_plan_file": self.active_plan_file,
         }
     
     def quick_preview(self) -> str:
@@ -153,6 +182,7 @@ def save_session(
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
+    active_plan_file: Optional[str] = None,
 ) -> str:
     """Save conversation to disk. Returns the session ID.
     
@@ -161,6 +191,7 @@ def save_session(
         model: Model name used
         session_id: Optional session ID (generated if not provided)
         auto_save: If True, this is an auto-save (updates timestamp only)
+        active_plan_file: Optional path to the plan file bound to this session
     """
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -174,27 +205,37 @@ def save_session(
     if auto_save:
         path = SESSIONS_DIR / f"{session_id}.json"
         if path.exists():
-            try:
-                existing_data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, FileNotFoundError):
-                pass
+            existing = _safe_read_json(path)
+            if existing is not None:
+                existing_data = existing
     
     # Extract session info
     info = _extract_session_info(messages)
+    
+    # Preserve existing plan file unless a new one is provided
+    plan_file = active_plan_file or existing_data.get("active_plan_file")
+    
+    # Clean surrogates from messages before serialization to prevent
+    # 'utf-8' codec can't encode characters errors
+    clean_messages = _clean_surrogates(messages)
     
     data = {
         "id": session_id,
         "model": model,
         "created_at": existing_data.get("created_at", now),
         "saved_at": now,
-        "messages": messages,
-        "message_count": len(messages),
-        "token_estimate": _estimate_tokens(messages),
+        "messages": clean_messages,
+        "message_count": len(clean_messages),
+        "token_estimate": _estimate_tokens(clean_messages),
         **info,
     }
     
+    if plan_file:
+        data["active_plan_file"] = plan_file
+    
     path = SESSIONS_DIR / f"{session_id}.json"
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ensure_ascii=True escapes any remaining non-ASCII safely
+    path.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
     return session_id
 
 
@@ -203,6 +244,7 @@ async def save_session_async(
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
+    active_plan_file: Optional[str] = None,
 ) -> str:
     """Async wrapper for save_session using thread pool."""
     loop = asyncio.get_event_loop()
@@ -213,6 +255,7 @@ async def save_session_async(
         model,
         session_id,
         auto_save,
+        active_plan_file,
     )
 
 
@@ -237,6 +280,7 @@ class SessionManager:
         messages: list[dict],
         model: str,
         is_critical: bool = False,
+        active_plan_file: Optional[str] = None,
     ) -> None:
         """Record a message to session storage.
         
@@ -244,6 +288,7 @@ class SessionManager:
             messages: Full message history
             model: Current model name
             is_critical: If True, wait for write to complete (e.g., user messages)
+            active_plan_file: Plan file path bound to this session
         """
         now = time.time()
         
@@ -254,7 +299,7 @@ class SessionManager:
                 self._pending_save.cancel()
             
             self._pending_save = asyncio.create_task(
-                save_session_async(messages, model, self.session_id, auto_save=True)
+                save_session_async(messages, model, self.session_id, auto_save=True, active_plan_file=active_plan_file)
             )
             self._last_save_time = now
             self._save_count += 1
@@ -269,14 +314,14 @@ class SessionManager:
         
         # Save now
         if not self.session_id:
-            self.session_id = save_session(messages, model, auto_save=False)
+            self.session_id = save_session(messages, model, auto_save=False, active_plan_file=active_plan_file)
         else:
-            await save_session_async(messages, model, self.session_id, auto_save=True)
+            await save_session_async(messages, model, self.session_id, auto_save=True, active_plan_file=active_plan_file)
         
         self._last_save_time = time.time()
         self._save_count += 1
     
-    async def flush(self, messages: list[dict], model: str) -> None:
+    async def flush(self, messages: list[dict], model: str, active_plan_file: Optional[str] = None) -> None:
         """Force flush any pending saves."""
         if self._pending_save and not self._pending_save.done():
             try:
@@ -286,7 +331,7 @@ class SessionManager:
         
         # Final save
         if self.session_id:
-            await save_session_async(messages, model, self.session_id, auto_save=True)
+            await save_session_async(messages, model, self.session_id, auto_save=True, active_plan_file=active_plan_file)
     
     def get_stats(self) -> dict:
         """Get session manager statistics."""
@@ -303,7 +348,9 @@ def load_session(session_id: str) -> tuple[list[dict], str, Optional[SessionMeta
     if not path.exists():
         return None
     
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _safe_read_json(path)
+    if data is None:
+        return None
     metadata = SessionMetadata(session_id, data)
     return data["messages"], data["model"], metadata
 
@@ -315,12 +362,11 @@ def list_sessions(limit: int = 20) -> list[SessionMetadata]:
     
     sessions = []
     for f in sorted(SESSIONS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            metadata = SessionMetadata(data.get("id", f.stem), data)
-            sessions.append(metadata)
-        except (json.JSONDecodeError, KeyError, FileNotFoundError):
+        data = _safe_read_json(f)
+        if data is None:
             continue
+        metadata = SessionMetadata(data.get("id", f.stem), data)
+        sessions.append(metadata)
         
         if len(sessions) >= limit:
             break
@@ -335,9 +381,11 @@ def get_session(session_id: str) -> Optional[SessionMetadata]:
         return None
     
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _safe_read_json(path)
+        if data is None:
+            return None
         return SessionMetadata(session_id, data)
-    except (json.JSONDecodeError, KeyError, FileNotFoundError):
+    except (KeyError, FileNotFoundError):
         return None
 
 
@@ -347,22 +395,21 @@ def search_sessions(query: str, limit: int = 10) -> list[SessionMetadata]:
     results = []
     
     for f in SESSIONS_DIR.glob("*.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            
-            # Search in summary, files, and user messages
-            searchable = [
-                data.get("summary", ""),
-                data.get("user_message_preview", ""),
-                " ".join(data.get("files_touched", [])),
-                data.get("model", ""),
-            ]
-            
-            if any(query_lower in text.lower() for text in searchable if text):
-                metadata = SessionMetadata(data.get("id", f.stem), data)
-                results.append(metadata)
-        except (json.JSONDecodeError, KeyError, FileNotFoundError):
+        data = _safe_read_json(f)
+        if data is None:
             continue
+        
+        # Search in summary, files, and user messages
+        searchable = [
+            data.get("summary", ""),
+            data.get("user_message_preview", ""),
+            " ".join(data.get("files_touched", [])),
+            data.get("model", ""),
+        ]
+        
+        if any(query_lower in text.lower() for text in searchable if text):
+            metadata = SessionMetadata(data.get("id", f.stem), data)
+            results.append(metadata)
         
         if len(results) >= limit:
             break

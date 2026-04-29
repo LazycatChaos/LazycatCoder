@@ -80,26 +80,6 @@ class LLM:
         # Log before sending request to avoid confusion during long waits
         print(f"📤 Sending request to {self.model}...")
 
-        # Debug: log the actual messages being sent
-        # if debug:
-        #     print(f"\n[DEBUG] === LLM Request ({len(messages)} messages) ===")
-        #     for i, m in enumerate(messages):
-        #         role = m.get("role", "?")
-        #         content = m.get("content", "")
-        #         if content:
-        #             preview = content[:300] + ("..." if len(content) > 300 else "")
-        #             print(f"  [{i}] {role}: {preview}")
-        #         if m.get("tool_calls"):
-        #             print(f"  [{i}] {role}: tool_calls={m['tool_calls']}")
-        #         if m.get("tool_call_id"):
-        #             print(f"  [{i}] tool_call_id={m['tool_call_id']}")
-        #         if m.get("subtype"):
-        #             print(f"  [{i}] subtype={m['subtype']}")
-        #     if tools:
-        #         tool_names = [t["function"]["name"] for t in tools]
-        #         print(f"  Tools available: {', '.join(tool_names)}")
-        #     print(f"[DEBUG] === End Request ===\n")
-
         # stream_options is an OpenAI extension; not all providers support it
         try:
             params["stream_options"] = {"include_usage": True}
