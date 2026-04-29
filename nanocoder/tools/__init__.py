@@ -14,6 +14,7 @@ from .todo import TodoWriteTool
 from .web_search import WebSearchTool
 from .fetch import FetchTool
 from .project_structure import ProjectStructureTool
+from .symbols import GetFileSymbolsTool
 
 
 class ToolRegistry:
@@ -38,6 +39,7 @@ class ToolRegistry:
             WebSearchTool(),  # Requires TAVILY_API_KEY
             FetchTool(),
             ProjectStructureTool(),
+            GetFileSymbolsTool(),
         ]
         for tool in default_tools:
             self.register(tool)

@@ -93,10 +93,6 @@ class Agent:
         # Cancellation flag (set by Ctrl+C or /cancel)
         self._cancelled = False
 
-        # Plan file tracking (session-bound context isolation)
-        self._active_plan_file: Optional[str] = None
-        self._plan_content_injected: bool = False
-
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages
 
@@ -105,20 +101,6 @@ class Agent:
 
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
-        # Inject plan file content if available and not yet injected
-        if self._active_plan_file and not self._plan_content_injected:
-            plan_content = self._inject_plan_content()
-            if plan_content:
-                plan_header = (
-                    f"# Active Project Plan\n\n"
-                    f"The following plan file is associated with this session. "
-                    f"Use it as your primary reference for the current project goals:\n\n"
-                    f"```{self._active_plan_file}\n{plan_content}\n```\n\n"
-                    f"Keep this plan in mind when working. Update it as the project progresses."
-                )
-                self.messages.append({"role": "system", "content": plan_header})
-                self._plan_content_injected = True
-        
         self.messages.append({"role": "user", "content": user_input})
         self.context.maybe_compress(self.messages, self.llm)
         
@@ -126,7 +108,7 @@ class Agent:
         if self.auto_save and self._session_manager:
             try:
                 self._run_async(self._session_manager.record_message(
-                    self.messages, self.llm.model, is_critical=True, active_plan_file=self._active_plan_file
+                    self.messages, self.llm.model, is_critical=True
                 ))
             except Exception as e:
                 if self.debug:
@@ -299,84 +281,6 @@ class Agent:
             self.session_id = save_session(self.messages, self.llm.model)
         return self.session_id
 
-    def _get_plan_dir(self) -> Path:
-        """Get the session-specific plan directory: .nanocoder/plans/{session_id}/"""
-        sid = self._ensure_session_id()
-        plan_dir = Path(self.workdir) / ".nanocoder" / "plans" / sid
-        plan_dir.mkdir(parents=True, exist_ok=True)
-        return plan_dir
-
-    def _rewrite_plan_path(self, file_path: str) -> str:
-        """Rewrite a plan file path to use session-specific subdirectory.
-        
-        E.g., '.nanocoder/plans/auth_plan.md' -> '.nanocoder/plans/{session_id}/auth_plan.md'
-        Returns the rewritten path, or original if not a plan file.
-        """
-        path = Path(file_path)
-        path_str = str(path).replace("\\", "/")
-        
-        # Check if it's in the plans directory
-        if ".nanocoder/plans/" not in path_str and ".nanocoder\\plans\\" not in path_str:
-            # Check if filename contains plan/todo keywords
-            filename = path.name.lower()
-            if "plan" not in filename and "todo" not in filename:
-                return file_path
-            # For plan/todo files outside .nanocoder/plans/, redirect there
-            plan_dir = self._get_plan_dir()
-            return str(plan_dir / path.name)
-        
-        # Already in .nanocoder/plans/, redirect to session subdirectory
-        plan_dir = self._get_plan_dir()
-        return str(plan_dir / path.name)
-
-    def _detect_plan_file(self, tool_name: str, arguments: dict) -> Optional[str]:
-        """Detect if a tool call creates or updates a plan file.
-        
-        Returns the plan file path if detected, None otherwise.
-        Plan files are identified by:
-        - Being in .nanocoder/plans/ directory
-        - Having 'plan' or 'todo' in the filename (case-insensitive)
-        """
-        if tool_name not in ("write_file", "edit_file"):
-            return None
-        
-        file_path = arguments.get("file_path", "")
-        if not file_path:
-            return None
-        
-        # Check if it's in the plans directory
-        path_str = file_path.replace("\\", "/")
-        if ".nanocoder/plans/" in path_str or ".nanocoder\\plans\\" in path_str:
-            return file_path
-        
-        # Check if filename contains plan/todo keywords
-        filename = Path(file_path).name.lower()
-        if "plan" in filename or "todo" in filename:
-            return file_path
-        
-        return None
-
-    def _inject_plan_content(self) -> Optional[str]:
-        """Inject the active plan file content into the system prompt.
-        
-        Returns the plan content string if injected, None otherwise.
-        """
-        if not self._active_plan_file:
-            return None
-        
-        plan_path = Path(self._active_plan_file)
-        if not plan_path.is_absolute():
-            plan_path = Path(self.workdir) / plan_path
-        
-        if not plan_path.exists():
-            return None
-        
-        try:
-            content = plan_path.read_text(encoding="utf-8")
-            return content
-        except Exception:
-            return None
-
     def _exec_tool(self, tc) -> str:
         """Execute a single tool call, returning the result string."""
         tool = get_tool(tc.name)
@@ -396,25 +300,7 @@ class Agent:
             console.print(f"[dim]Tool is_read_only: {tool.is_read_only if tool else 'N/A'}[/dim]")
         
         try:
-            # Rewrite plan file path to session-specific directory
-            rewritten_args = dict(tc.arguments)
-            if tc.name in ("write_file", "edit_file"):
-                original_path = rewritten_args.get("file_path", "")
-                new_path = self._rewrite_plan_path(original_path)
-                if new_path != original_path:
-                    rewritten_args["file_path"] = new_path
-                    if self.debug:
-                        from rich.console import Console
-                        console = Console()
-                        console.print(f"[dim]Plan path rewritten: {original_path} -> {new_path}[/dim]")
-            
-            result = tool.execute(**rewritten_args)
-            
-            # Detect plan file creation/update (use the rewritten path)
-            plan_file = self._detect_plan_file(tc.name, rewritten_args)
-            if plan_file:
-                self._active_plan_file = plan_file
-                self._plan_content_injected = False  # Reset so it gets re-injected next chat
+            result = tool.execute(**tc.arguments)
             
             if self.debug:
                 from rich.console import Console
@@ -530,7 +416,7 @@ class Agent:
             if self.auto_save and self._session_manager:
                 try:
                     self._run_async(self._session_manager.record_message(
-                        self.messages, self.llm.model, is_critical=True, active_plan_file=self._active_plan_file
+                        self.messages, self.llm.model, is_critical=True
                     ))
                 except Exception:
                     pass  # Don't crash the thread on save failure
@@ -573,9 +459,9 @@ class Agent:
     def save_session(self) -> str:
         """Manually save the current session."""
         if not self.session_id:
-            self.session_id = save_session(self.messages, self.llm.model, active_plan_file=self._active_plan_file)
+            self.session_id = save_session(self.messages, self.llm.model)
         else:
-            save_session(self.messages, self.llm.model, self.session_id, active_plan_file=self._active_plan_file)
+            save_session(self.messages, self.llm.model, self.session_id)
         return self.session_id
 
     def flush_session(self):
@@ -583,7 +469,7 @@ class Agent:
         if self.auto_save and self._session_manager:
             try:
                 self._run_async(self._session_manager.flush(
-                    self.messages, self.llm.model, active_plan_file=self._active_plan_file
+                    self.messages, self.llm.model
                 ), timeout=10)
             except Exception:
                 pass  # Don't crash on exit if flush fails
@@ -606,7 +492,7 @@ class Agent:
         def _save_bg():
             try:
                 self._run_async(self._session_manager.record_message(
-                    self.messages, self.llm.model, is_critical=False, active_plan_file=self._active_plan_file
+                    self.messages, self.llm.model, is_critical=False
                 ))
             except Exception:
                 pass  # Silent failure for non-critical saves

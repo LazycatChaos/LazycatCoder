@@ -20,9 +20,9 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    # 12 tools: bash, read_file, write_file, edit_file, delete_file,
-    #           glob, grep, agent, todo_write, web_search, fetch_url, project_structure
-    assert len(ALL_TOOLS) == 12
+    # 13 tools: bash, read_file, write_file, edit_file, delete_file,
+    #           glob, grep, agent, todo_write, web_search, fetch_url, project_structure, get_file_symbols
+    assert len(ALL_TOOLS) == 13
 
 
 # --- Config ---

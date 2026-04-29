@@ -1,57 +1,19 @@
 """System prompt - the instructions that turn an LLM into a coding agent."""
 
-import ast
 import os
 import platform
 from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# AST-based Python symbol extraction
+# Clean project tree (no AST — use get_file_symbols tool for on-demand lookup)
 # ---------------------------------------------------------------------------
-
-def _extract_python_symbols(file_path: Path) -> str:
-    """Extract class and function signatures from a Python file using ast.
-
-    Returns a compact multi-line string like:
-        class Foo:
-            def __init__(...)
-            def bar(...)
-        def standalone(...)
-    """
-    try:
-        source = file_path.read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(source, filename=str(file_path))
-    except (SyntaxError, UnicodeDecodeError, OSError):
-        return ""
-
-    lines: list[str] = []
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            lines.append(f"  class {node.name}:")
-            for sub in node.body:
-                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    lines.append(f"    def {sub.name}(...)")
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            lines.append(f"  def {node.name}(...)")
-
-    return "\n".join(lines) if lines else ""
-
-
-# ---------------------------------------------------------------------------
-# Project tree with optional AST symbols
-# ---------------------------------------------------------------------------
-
-# Hard cap for the entire project tree string (chars).
-# When exceeded, .py files fall back to plain filenames.
-_AST_MAP_CHAR_LIMIT = 5000
-
 
 def _get_project_tree(root: str, max_depth: int = 4) -> str:
-    """Generate a tree view of the project directory structure.
+    """Generate a clean tree view of the project directory structure.
 
-    For .py files, appends extracted class/function signatures (AST map)
-    when the total output stays within the character budget.
+    No AST symbols are included here — the agent should use the
+    `get_file_symbols` tool to inspect a file's structure on demand.
     """
     root_path = Path(root).resolve()
     if not root_path.is_dir():
@@ -94,22 +56,6 @@ def _get_project_tree(root: str, max_depth: int = 4) -> str:
             else:
                 connector = "└── " if is_last_entry else "├── "
                 lines.append(f"{new_prefix}{connector}{entry.name}")
-                # Inject AST symbols for Python files (budget permitting)
-                if entry.suffix == ".py":
-                    _maybe_append_ast(entry, new_prefix)
-
-    def _maybe_append_ast(file_path: Path, prefix: str):
-        """Append AST symbols if we still have character budget."""
-        current_len = sum(len(l) for l in lines)
-        if current_len >= _AST_MAP_CHAR_LIMIT:
-            return
-        symbols = _extract_python_symbols(file_path)
-        if symbols:
-            # Check if adding symbols would exceed the budget
-            if current_len + len(symbols) > _AST_MAP_CHAR_LIMIT:
-                return
-            for sym_line in symbols.splitlines():
-                lines.append(f"{prefix}  {sym_line}")
 
     # Start from root (root itself is not printed, only its children)
     try:
@@ -132,8 +78,6 @@ def _get_project_tree(root: str, max_depth: int = 4) -> str:
         else:
             connector = "└── " if is_last_entry else "├── "
             lines.append(f"{connector}{entry.name}")
-            if entry.suffix == ".py":
-                _maybe_append_ast(entry, "")
 
     if not lines:
         return ""
@@ -183,9 +127,10 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
    - **Only split into multiple rounds when there is a true dependency** (e.g., you must read a file to know what to grep for, or you must run a command to see its output before deciding the next step).
    - When exploring a new codebase, call `project_structure` first to get the full layout, then batch-read all relevant files in the next round.
 6. **Use `project_structure` to explore codebases.** Instead of running multiple `ls`, `cd`, `find` commands via `bash`, use `project_structure` to get a complete tree view of the directory in one call. This is much faster and saves interaction rounds.
-7. **edit_file uniqueness.** When using edit_file with 'replace', include enough surrounding context in old_string to guarantee a unique match.
-8. **Respect existing style.** Match the project's coding conventions.
-9. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
-10. **Direct Communication.** If the user asks you to "generate a document", "show me the code", "explain", or provide a summary, **output it directly in your chat response using Markdown**. Do NOT use `write_file` to save documents or answers unless the user explicitly instructs you to "save it to a file".
-11. **Project Planning.** For complex multi-step tasks, use `write_file` to create a plan file in the `.nanocoder/plans/` directory with a descriptive name (e.g., `.nanocoder/plans/auth_feature_plan.md`). The system will automatically place it in a session-specific subdirectory. Update it with `edit_file` as the project progresses. This helps maintain context across sessions.
+7. **Use `get_file_symbols` for file structure.** When you need to understand a Python file's classes, methods, and function signatures without reading the full code, use `get_file_symbols(filepath)`. This is especially useful for large files or when you need to quickly scan multiple files.
+8. **edit_file uniqueness.** When using edit_file with 'replace', include enough surrounding context in old_string to guarantee a unique match.
+9. **Respect existing style.** Match the project's coding conventions.
+10. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
+11. **Direct Communication.** If the user asks you to "generate a document", "show me the code", "explain", or provide a summary, **output it directly in your chat response using Markdown**. Do NOT use `write_file` to save documents or answers unless the user explicitly instructs you to "save it to a file".
+12. **Use `todo_write` for task tracking.** For multi-step tasks, use the `todo_write` tool to track progress. This keeps task state visible across context compression.
 """

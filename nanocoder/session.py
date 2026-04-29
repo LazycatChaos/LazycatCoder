@@ -68,7 +68,6 @@ class SessionMetadata:
         self.files_touched = data.get("files_touched", []) if data else []
         self.errors_seen = data.get("errors_seen", []) if data else []
         self.user_message_preview = data.get("user_message_preview", "") if data else ""
-        self.active_plan_file = data.get("active_plan_file") if data else None
     
     def to_dict(self) -> dict:
         return {
@@ -82,7 +81,6 @@ class SessionMetadata:
             "files_touched": self.files_touched,
             "errors_seen": self.errors_seen,
             "user_message_preview": self.user_message_preview,
-            "active_plan_file": self.active_plan_file,
         }
     
     def quick_preview(self) -> str:
@@ -182,7 +180,6 @@ def save_session(
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
-    active_plan_file: Optional[str] = None,
 ) -> str:
     """Save conversation to disk. Returns the session ID.
     
@@ -191,7 +188,6 @@ def save_session(
         model: Model name used
         session_id: Optional session ID (generated if not provided)
         auto_save: If True, this is an auto-save (updates timestamp only)
-        active_plan_file: Optional path to the plan file bound to this session
     """
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -212,9 +208,6 @@ def save_session(
     # Extract session info
     info = _extract_session_info(messages)
     
-    # Preserve existing plan file unless a new one is provided
-    plan_file = active_plan_file or existing_data.get("active_plan_file")
-    
     # Clean surrogates from messages before serialization to prevent
     # 'utf-8' codec can't encode characters errors
     clean_messages = _clean_surrogates(messages)
@@ -230,9 +223,6 @@ def save_session(
         **info,
     }
     
-    if plan_file:
-        data["active_plan_file"] = plan_file
-    
     path = SESSIONS_DIR / f"{session_id}.json"
     # ensure_ascii=True escapes any remaining non-ASCII safely
     path.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -244,7 +234,6 @@ async def save_session_async(
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
-    active_plan_file: Optional[str] = None,
 ) -> str:
     """Async wrapper for save_session using thread pool."""
     loop = asyncio.get_event_loop()
@@ -255,7 +244,6 @@ async def save_session_async(
         model,
         session_id,
         auto_save,
-        active_plan_file,
     )
 
 
@@ -280,7 +268,6 @@ class SessionManager:
         messages: list[dict],
         model: str,
         is_critical: bool = False,
-        active_plan_file: Optional[str] = None,
     ) -> None:
         """Record a message to session storage.
         
@@ -288,7 +275,6 @@ class SessionManager:
             messages: Full message history
             model: Current model name
             is_critical: If True, wait for write to complete (e.g., user messages)
-            active_plan_file: Plan file path bound to this session
         """
         now = time.time()
         
@@ -299,7 +285,7 @@ class SessionManager:
                 self._pending_save.cancel()
             
             self._pending_save = asyncio.create_task(
-                save_session_async(messages, model, self.session_id, auto_save=True, active_plan_file=active_plan_file)
+                save_session_async(messages, model, self.session_id, auto_save=True)
             )
             self._last_save_time = now
             self._save_count += 1
@@ -314,14 +300,14 @@ class SessionManager:
         
         # Save now
         if not self.session_id:
-            self.session_id = save_session(messages, model, auto_save=False, active_plan_file=active_plan_file)
+            self.session_id = save_session(messages, model, auto_save=False)
         else:
-            await save_session_async(messages, model, self.session_id, auto_save=True, active_plan_file=active_plan_file)
+            await save_session_async(messages, model, self.session_id, auto_save=True)
         
         self._last_save_time = time.time()
         self._save_count += 1
     
-    async def flush(self, messages: list[dict], model: str, active_plan_file: Optional[str] = None) -> None:
+    async def flush(self, messages: list[dict], model: str) -> None:
         """Force flush any pending saves."""
         if self._pending_save and not self._pending_save.done():
             try:
@@ -331,7 +317,7 @@ class SessionManager:
         
         # Final save
         if self.session_id:
-            await save_session_async(messages, model, self.session_id, auto_save=True, active_plan_file=active_plan_file)
+            await save_session_async(messages, model, self.session_id, auto_save=True)
     
     def get_stats(self) -> dict:
         """Get session manager statistics."""

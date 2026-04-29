@@ -10,9 +10,9 @@ from nanocoder.tools import ALL_TOOLS, get_tool
 # --- Registry ---
 
 def test_tool_count():
-    """12 tools: bash, read_file, write_file, edit_file, delete_file,
-    glob, grep, agent, todo_write, web_search, fetch_url, project_structure"""
-    assert len(ALL_TOOLS) == 12
+    """13 tools: bash, read_file, write_file, edit_file, delete_file,
+    glob, grep, agent, todo_write, web_search, fetch_url, project_structure, get_file_symbols"""
+    assert len(ALL_TOOLS) == 13
 
 
 def test_all_tools_have_valid_schema():
