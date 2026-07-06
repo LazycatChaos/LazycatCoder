@@ -12,7 +12,7 @@ class WriteFileTool(Tool):
     name = "write_file"
 
     # Max single chunk size: 8KB to avoid JSON truncation in tool arguments
-    MAX_CHUNK_BYTES = 8 * 1024
+    MAX_CHUNK_BYTES = 20 * 1024
 
     description = (
         "Create a new file or completely overwrite an existing one. "

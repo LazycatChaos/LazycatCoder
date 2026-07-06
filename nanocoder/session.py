@@ -225,7 +225,7 @@ def save_session(
     
     path = SESSIONS_DIR / f"{session_id}.json"
     # ensure_ascii=True escapes any remaining non-ASCII safely
-    path.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return session_id
 
 
