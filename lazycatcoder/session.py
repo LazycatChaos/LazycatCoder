@@ -1,7 +1,7 @@
 """Session persistence - save and resume conversations.
 
 Claude Code maintains session state via QueryEngine (1295 lines).
-NanoCoder distills this to: JSON dump of messages + model config + summary.
+LazyCatCoder distills this to: JSON dump of messages + model config + summary.
 
 Enhanced features:
 - Auto-save on every message (with lazy flush)
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 
-SESSIONS_DIR = Path.home() / ".nanocoder" / "sessions"
+SESSIONS_DIR = Path.home() / ".lazycatcoder" / "sessions"
 
 # Lazy flush timer (seconds) - batch writes within this window
 LAZY_FLUSH_INTERVAL = 2.0
@@ -421,7 +421,7 @@ def export_session(session_id: str, output_path: str) -> bool:
     messages, model, metadata = result
     
     lines = [
-        f"# NanoCoder Session Export",
+        f"# LazyCatCoder Session Export",
         f"",
         f"## Metadata",
         f"- **Session ID**: {session_id}",

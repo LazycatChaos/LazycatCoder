@@ -4,9 +4,9 @@ import os
 import pathlib
 import tempfile
 
-from nanocoder import Agent, LLM, Config, ALL_TOOLS, __version__
-from nanocoder.context import ContextManager, estimate_tokens, _approx_tokens
-from nanocoder.session import save_session, load_session, list_sessions
+from lazycatcoder import Agent, LLM, Config, ALL_TOOLS, __version__
+from lazycatcoder.context import ContextManager, estimate_tokens, _approx_tokens
+from lazycatcoder.session import save_session, load_session, list_sessions
 
 
 # --- Version & Imports ---
@@ -139,7 +139,7 @@ def test_session_save_load():
     assert loaded[0] == msgs
     assert loaded[1] == "test-model"
     # cleanup
-    pathlib.Path.home().joinpath(".nanocoder/sessions/pytest_test_session.json").unlink()
+    pathlib.Path.home().joinpath(".lazycatcoder/sessions/pytest_test_session.json").unlink()
 
 
 def test_session_not_found():
@@ -155,7 +155,7 @@ def test_list_sessions():
 
 def test_agent_debug_mode():
     """Test that debug mode produces verbose output."""
-    from nanocoder.llm import LLMResponse
+    from lazycatcoder.llm import LLMResponse
     from io import StringIO
     import sys
 
@@ -189,7 +189,7 @@ def test_agent_debug_mode():
 
 def test_agent_reset():
     """Test that agent reset clears messages and error log."""
-    from nanocoder.llm import LLMResponse
+    from lazycatcoder.llm import LLMResponse
 
     class MockLLM:
         def __init__(self):

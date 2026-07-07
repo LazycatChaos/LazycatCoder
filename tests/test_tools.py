@@ -4,7 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from nanocoder.tools import ALL_TOOLS, get_tool
+from lazycatcoder.tools import ALL_TOOLS, get_tool
 
 
 # --- Registry ---
@@ -112,7 +112,7 @@ def test_read_file():
 
 def test_read_file_not_found():
     read = get_tool("read_file")
-    r = read.execute(file_path="/tmp/nanocoder_nonexistent_file.txt")
+    r = read.execute(file_path="/tmp/lazycatcoder_nonexistent_file.txt")
     assert "not found" in r.lower() or "Error" in r
 
 
@@ -161,7 +161,7 @@ def test_edit_file_basic():
         path = f.name
     # Close before editing (Windows requires this)
     # First record the file as "read" so edit validation passes
-    from nanocoder.tools.edit import record_file_read
+    from lazycatcoder.tools.edit import record_file_read
     record_file_read(path)
     r = edit.execute(file_path=path, command="replace", old_string="return 42", new_string="return 99")
     assert "Edited" in r or "Modified" in r or "Replaced" in r
@@ -177,7 +177,7 @@ def test_edit_file_not_found_string():
         f.write("hello\n")
         f.flush()
         path = f.name
-    from nanocoder.tools.edit import record_file_read
+    from lazycatcoder.tools.edit import record_file_read
     record_file_read(path)
     r = edit.execute(file_path=path, command="replace", old_string="NONEXISTENT", new_string="x")
     assert "not found" in r.lower()
@@ -190,7 +190,7 @@ def test_edit_file_duplicate_string():
         f.write("dup\ndup\n")
         f.flush()
         path = f.name
-    from nanocoder.tools.edit import record_file_read
+    from lazycatcoder.tools.edit import record_file_read
     record_file_read(path)
     r = edit.execute(file_path=path, command="replace", old_string="dup", new_string="x")
     assert "2 times" in r or "appears" in r.lower()
@@ -226,9 +226,9 @@ def test_delete_file_rejects_directory():
 
 def test_delete_file_workdir_sandbox():
     """delete_file must not allow paths outside workdir."""
-    from nanocoder.tools.delete import DeleteFileTool
+    from lazycatcoder.tools.delete import DeleteFileTool
     t = DeleteFileTool()
-    t.workdir = r"D:\pycharm_workspace\NanoCoder"
+    t.workdir = r"D:\pycharm_workspace\LazycatCoder"
 
     # Escape attempt with ..
     r = t.execute(r"..\other_dir\secret.txt")

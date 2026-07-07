@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nanocoderagent"
+name = "lazycatcoder"
 version = "0.1.0"
 description = "Minimal AI coding agent (~1300 LoC) inspired by Claude Code. Works with any LLM."
 readme = "README.md"
@@ -28,15 +28,15 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanocoder"]
+packages = ["lazycatcoder"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-nanocoder = "nanocoder.cli:main"
+lazycatcoder = "lazycatcoder.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/he-yufeng/NanoCoder"
-Repository = "https://github.com/he-yufeng/NanoCoder"
-Issues = "https://github.com/he-yufeng/NanoCoder/issues"
+Homepage = "https://github.com/LazycatChaos/LazycatCoder"
+Repository = "https://github.com/LazycatChaos/LazycatCoder"
+Issues = "https://github.com/LazycatChaos/LazycatCoder/issues"

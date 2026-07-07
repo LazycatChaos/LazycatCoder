@@ -21,7 +21,7 @@ console = Console()
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        prog="nanocoder",
+        prog="lazycatcoder",
         description="Minimal AI coding agent. Works with any OpenAI-compatible LLM.",
     )
     p.add_argument("-m", "--model", help="Model name (default: $NANOCODER_MODEL or gpt-4o)")
@@ -126,7 +126,7 @@ def _repl(agent: Agent, config: Config):
     """Interactive read-eval-print loop."""
     debug_badge = " [yellow bold]DEBUG[/]" if config.debug else ""
     console.print(Panel(
-        f"[bold]NanoCoder[/bold] v{__version__}{debug_badge}\n"
+        f"[bold]LazyCatCoder[/bold] v{__version__}{debug_badge}\n"
         f"Model: [cyan]{config.model}[/cyan]"
         + (f"  Base: [dim]{config.base_url}[/dim]" if config.base_url else "")
         + f"  Timeout: [dim]{config.timeout}s[/dim]"
@@ -134,7 +134,7 @@ def _repl(agent: Agent, config: Config):
         border_style="blue",
     ))
 
-    hist_path = os.path.expanduser("~/.nanocoder_history")
+    hist_path = os.path.expanduser("~/.lazycatcoder_history")
     history = FileHistory(hist_path)
 
     while True:
@@ -271,7 +271,7 @@ def _repl(agent: Agent, config: Config):
         if user_input == "/save":
             sid = agent.save_session()
             console.print(f"[green]Session saved: {sid}[/green]")
-            console.print(f"Resume with: nanocoder -r {sid}")
+            console.print(f"Resume with: lazycatcoder -r {sid}")
             continue
         if user_input == "/sessions":
             sessions = list_sessions()
@@ -322,8 +322,8 @@ def _show_help():
         "  /compact       Compress conversation context\n"
         "  /save          Save session to disk\n"
         "  /sessions      List saved sessions\n"
-        "  quit           Exit NanoCoder",
-        title="NanoCoder Help",
+        "  quit           Exit LazyCatCoder",
+        title="LazyCatCoder Help",
         border_style="dim",
     ))
 
