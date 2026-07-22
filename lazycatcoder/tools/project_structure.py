@@ -7,7 +7,7 @@ the codebase layout without needing multiple ls/cd calls.
 import os
 from pathlib import Path
 from typing import Optional
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 class ProjectStructureTool(Tool):
@@ -81,11 +81,11 @@ class ProjectStructureTool(Tool):
         path: Optional[str] = None,
         max_depth: int = 3,
         include_hidden: bool = False,
-    ) -> str:
+    ) -> ToolResult:
         """Return a tree view of the directory structure."""
         validation = self.validate_input(path=path)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         root = Path(path).expanduser().resolve() if path else Path.cwd()
         max_depth = max(1, min(max_depth, 10))  # clamp 1-10
@@ -94,10 +94,10 @@ class ProjectStructureTool(Tool):
         self._build_tree(root, "", True, max_depth, include_hidden, lines)
 
         if not lines:
-            return f"Directory '{root}' is empty"
+            return ToolResult(success=True, content=f"Directory '{root}' is empty")
 
         header = f"Project structure: {root} (max depth: {max_depth})\n"
-        return header + "\n".join(lines)
+        return ToolResult(success=True, content=header + "\n".join(lines))
 
     def _build_tree(
         self,

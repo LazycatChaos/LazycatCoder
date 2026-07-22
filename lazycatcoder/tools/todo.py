@@ -5,7 +5,7 @@ Inspired by Claude Code's TodoWriteTool - helps track progress on complex tasks.
 
 from typing import List, Literal, Optional
 from dataclasses import dataclass, field
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 @dataclass
@@ -74,25 +74,25 @@ class TodoWriteTool(Tool):
     # In-memory storage (would be persisted in real implementation)
     _todos: List[TodoItem] = field(default_factory=list)
 
-    def execute(self, todos: List[dict]) -> str:
+    def execute(self, todos: List[dict]) -> ToolResult:
         """Update the todo list and return status."""
         try:
             # Validate and convert todos
             validated_todos = []
             for todo in todos:
                 if not isinstance(todo, dict):
-                    return f"Error: Invalid todo format: {todo}"
+                    return ToolResult(success=False, content=f"Error: Invalid todo format: {todo}", error_code=1)
                 
                 content = todo.get("content", "").strip()
                 active_form = todo.get("active_form", "").strip()
                 status = todo.get("status", "pending")
 
                 if not content:
-                    return "Error: Each todo must have non-empty 'content'"
+                    return ToolResult(success=False, content="Error: Each todo must have non-empty 'content'", error_code=2)
                 if not active_form:
-                    return "Error: Each todo must have non-empty 'active_form'"
+                    return ToolResult(success=False, content="Error: Each todo must have non-empty 'active_form'", error_code=3)
                 if status not in ["pending", "in_progress", "completed"]:
-                    return f"Error: Invalid status '{status}'. Must be: pending, in_progress, or completed"
+                    return ToolResult(success=False, content=f"Error: Invalid status '{status}'. Must be: pending, in_progress, or completed", error_code=4)
 
                 validated_todos.append(TodoItem(
                     content=content,
@@ -103,9 +103,9 @@ class TodoWriteTool(Tool):
             # Validate business rules
             in_progress_count = sum(1 for t in validated_todos if t.status == "in_progress")
             if in_progress_count == 0 and len(validated_todos) > 0:
-                return "Error: At least one task must be in_progress when there are tasks"
+                return ToolResult(success=False, content="Error: At least one task must be in_progress when there are tasks", error_code=5)
             if in_progress_count > 1:
-                return f"Error: Exactly ONE task must be in_progress, but found {in_progress_count}"
+                return ToolResult(success=False, content=f"Error: Exactly ONE task must be in_progress, but found {in_progress_count}", error_code=6)
 
             # Check for completion without verification (heuristic)
             all_completed = all(t.status == "completed" for t in validated_todos)
@@ -131,10 +131,10 @@ class TodoWriteTool(Tool):
             else:
                 result_lines.append("All tasks completed! Task list cleared.")
 
-            return "\n".join(result_lines)
+            return ToolResult(success=True, content="\n".join(result_lines))
 
         except Exception as e:
-            return f"Error updating todos: {e}"
+            return ToolResult(success=False, content=f"Error updating todos: {e}", error_code=99)
 
     def get_todos(self) -> List[TodoItem]:
         """Get current todo list."""

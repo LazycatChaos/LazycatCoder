@@ -78,11 +78,13 @@ class EvalRunner:
         try:
             response = agent.chat(prompt)
             usage = agent.get_usage_stats()
+            tool_stats = agent.get_tool_stats()
             return {
                 "success": True,
                 "response": response,
                 "rounds": usage["rounds"],
                 "total_tokens": usage["total_tokens"],
+                "tool_stats": tool_stats,
                 "error": None,
             }
         except Exception as e:
@@ -91,6 +93,7 @@ class EvalRunner:
                 "response": "",
                 "rounds": 0,
                 "total_tokens": 0,
+                "tool_stats": {},
                 "error": str(e),
             }
         finally:

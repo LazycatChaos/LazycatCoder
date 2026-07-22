@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional, Callable
 from .llm import LLM
 from .tools import ALL_TOOLS, get_tool
-from .tools.base import Tool
+from .tools.base import Tool, ToolResult
 from .tools.agent import AgentTool
 from .prompt import system_prompt
 from .context import ContextManager
@@ -78,6 +78,10 @@ class Agent:
         # Error diagnostics with watermark isolation
         self._error_log: list[dict] = []
         self._error_watermark: int = 0  # Index at start of current turn
+
+        # Tool call statistics (thread-safe)
+        self._tool_stats: dict[str, dict] = {}
+        self._stats_lock = threading.Lock()
 
         # wire up sub-agent capability
         for t in self.tools:
@@ -303,22 +307,34 @@ class Agent:
                 console.print(f"  [green]{k}[/green]: {val_str}")
             console.print(f"[dim]Tool is_read_only: {tool.is_read_only if tool else 'N/A'}[/dim]")
         
+        start_time = time.perf_counter()
+        is_error = False
+        
         try:
             result = tool.execute(**tc.arguments)
+            
+            # Handle ToolResult objects - extract content for LLM messages
+            if isinstance(result, ToolResult):
+                content = result.content
+                is_error = not result.success
+            else:
+                # Legacy string return (backward compatibility)
+                content = str(result)
+                is_error = self._is_tool_error(content)
             
             if self.debug:
                 from rich.console import Console
                 from rich.panel import Panel
                 console = Console()
                 # Show full result in a panel for readability
-                result_display = result if len(result) <= 200 else result[:200] + f"\n\n... ({len(result)} total chars, truncated)"
+                result_display = content if len(content) <= 200 else content[:200] + f"\n\n... ({len(content)} total chars, truncated)"
                 console.print(Panel(
                     result_display,
-                    title=f"[green]✓ {tc.name}[/green] [dim]({len(result)} chars)[/dim]",
-                    border_style="green",
+                    title=f"[green]✓ {tc.name}[/green] [dim]({len(content)} chars)[/dim]",
+                    border_style="green" if not is_error else "red",
                 ))
             
-            return result
+            return content
         except Exception as e:
             # Log error with watermark for turn-scoped isolation
             self._log_error(tc.name, tc.arguments, e)
@@ -331,7 +347,20 @@ class Agent:
                     title=f"[red]✗ {tc.name} (Error)[/red]",
                     border_style="red",
                 ))
+            is_error = True
             return f"Error executing {tc.name}: {e}"
+        finally:
+            cost_time = time.perf_counter() - start_time
+            with self._stats_lock:
+                if tc.name not in self._tool_stats:
+                    self._tool_stats[tc.name] = {"calls": 0, "success": 0, "failure": 0, "total_time": 0.0}
+                stats = self._tool_stats[tc.name]
+                stats["calls"] += 1
+                stats["total_time"] += cost_time
+                if is_error:
+                    stats["failure"] += 1
+                else:
+                    stats["success"] += 1
 
     def _log_error(self, tool_name: str, arguments: dict, error: Exception):
         """Log an error with diagnostic info (Claude Code style)."""
@@ -446,6 +475,26 @@ class Agent:
             "total_tokens": self._total_tokens_input + self._total_tokens_output,
             "rounds": self._round_count,
         }
+
+    def get_tool_stats(self) -> dict[str, dict]:
+        """Get tool call statistics.
+
+        Returns dict like:
+        {
+            "read_file": {"calls": 3, "success": 3, "failure": 0, "total_time": 1.25},
+            "bash": {"calls": 2, "success": 1, "failure": 1, "total_time": 45.1},
+        }
+        """
+        with self._stats_lock:
+            return {k: dict(v) for k, v in self._tool_stats.items()}
+
+    def clear_stats(self):
+        """Clear all tool call statistics.
+
+        Call this explicitly if reusing the same Agent instance for different tasks.
+        """
+        with self._stats_lock:
+            self._tool_stats.clear()
 
     def get_session_stats(self) -> dict:
         """Get session statistics."""

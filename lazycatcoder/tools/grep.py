@@ -13,7 +13,7 @@ import subprocess
 import os
 from pathlib import Path
 from typing import List, Optional, Literal
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 class GrepTool(Tool):
@@ -87,15 +87,15 @@ class GrepTool(Tool):
             head_limit: Optional[int] = None,
             offset: int = 0,
             multiline: bool = False,
-    ) -> str:
+    ) -> ToolResult:
         validation = self.validate_input(pattern, path=path)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         # 核心改动：寻找原生的 rg.exe，不再做任何 WSL 桥接检测
         rg_executable = shutil.which('rg') or shutil.which('rg.exe')
         if not rg_executable:
-            return "Error: ripgrep (rg.exe) not found on Windows. Please install it using 'winget install ripgrep' or 'scoop install ripgrep'."
+            return ToolResult(success=False, content="Error: ripgrep (rg.exe) not found on Windows. Please install it using 'winget install ripgrep' or 'scoop install ripgrep'.", error_code=10)
 
         args = [rg_executable, "--hidden"]
 
@@ -160,12 +160,12 @@ class GrepTool(Tool):
 
             if output_mode == "content":
                 content = "\n".join(final_lines)
-                if not content: return "No matches found"
+                if not content: return ToolResult(success=True, content="No matches found")
                 if limit_info: content += f"\n\n[Showing results with pagination = {limit_info}]"
-                return content
+                return ToolResult(success=True, content=content)
 
             elif output_mode == "count":
-                if not final_lines: return "No matches found"
+                if not final_lines: return ToolResult(success=True, content="No matches found")
                 content = "\n".join(final_lines)
                 total_matches = sum(
                     int(line.rsplit(":", 1)[1])
@@ -174,19 +174,19 @@ class GrepTool(Tool):
                 )
                 file_count = len(final_lines)
                 summary = f"\n\nFound {total_matches} total occurrence{'s' if total_matches != 1 else ''} across {file_count} file{'s' if file_count != 1 else ''}{limit_info}"
-                return content + summary
+                return ToolResult(success=True, content=content + summary)
 
             else:
-                if not final_lines: return "No files found"
+                if not final_lines: return ToolResult(success=True, content="No files found")
                 file_count = len(final_lines)
                 result_lines = [f"Found {file_count} file{'s' if file_count != 1 else ''}{limit_info}"]
                 result_lines.extend(final_lines)
-                return "\n".join(result_lines)
+                return ToolResult(success=True, content="\n".join(result_lines))
 
         except subprocess.TimeoutExpired:
-            return "Error: search timed out (60s limit)"
+            return ToolResult(success=False, content="Error: search timed out (60s limit)", error_code=20)
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult(success=False, content=f"Error: {e}", error_code=99)
 
     def get_activity_description(self, kwargs: dict) -> str:
         pattern = kwargs.get("pattern", "")

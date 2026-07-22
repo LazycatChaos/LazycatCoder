@@ -13,7 +13,7 @@ import time
 import re
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
-from .base import Tool
+from .base import Tool, ToolResult
 
 
 class FetchTool(Tool):
@@ -75,7 +75,7 @@ The tool automatically extracts main content and removes navigation/ads."""
         extract_type: str = "auto",
         follow_redirects: bool = True,
         **kwargs
-    ) -> str:
+    ) -> ToolResult:
         """
         Fetch content from URL
         
@@ -91,15 +91,16 @@ The tool automatically extracts main content and removes navigation/ads."""
         """
         # Validate URL
         if not url or not url.strip():
-            return "Error: URL cannot be empty"
+            return ToolResult(success=False, content="Error: URL cannot be empty", error_code=1)
         
         url = url.strip()
         
         # Validate URL scheme
         if not url.startswith(("http://", "https://")):
-            return (
-                f"Error: Invalid URL scheme. URL must start with http:// or https://\n"
-                f"Provided: {url[:50]}"
+            return ToolResult(
+                success=False,
+                content=f"Error: Invalid URL scheme. URL must start with http:// or https://\nProvided: {url[:50]}",
+                error_code=2
             )
         
         # Validate timeout
@@ -144,30 +145,30 @@ The tool automatically extracts main content and removes navigation/ads."""
                 extracted = self._extract_text(content)
             
             # Format response
-            return self._format_response(
+            return ToolResult(success=True, content=self._format_response(
                 url=url,
                 content=extracted,
                 content_type=content_type,
                 status_code=status_code,
                 elapsed=elapsed
-            )
+            ))
             
         except Exception as e:
             error_msg = str(e)
             if "timeout" in error_msg.lower():
-                return (
-                    f"Error: Request timed out after {timeout}s\n"
-                    f"URL: {url}\n"
-                    f"Try increasing timeout or check if the site is accessible."
+                return ToolResult(
+                    success=False,
+                    content=f"Error: Request timed out after {timeout}s\nURL: {url}\nTry increasing timeout or check if the site is accessible.",
+                    error_code=10
                 )
             elif "SSL" in error_msg or "certificate" in error_msg.lower():
-                return (
-                    f"Error: SSL certificate verification failed\n"
-                    f"URL: {url}\n"
-                    f"This may be due to an invalid or self-signed certificate."
+                return ToolResult(
+                    success=False,
+                    content=f"Error: SSL certificate verification failed\nURL: {url}\nThis may be due to an invalid or self-signed certificate.",
+                    error_code=11
                 )
             else:
-                return f"Error: Failed to fetch URL: {error_msg}"
+                return ToolResult(success=False, content=f"Error: Failed to fetch URL: {error_msg}", error_code=99)
     
     def _fetch_url(
         self,

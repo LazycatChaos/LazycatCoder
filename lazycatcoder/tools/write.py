@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Any, Optional
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 from .edit import record_file_read
 
 
@@ -122,8 +122,6 @@ class WriteFileTool(Tool):
 
         return ValidationResult(valid=True)
 
-    # 优化 3：修改函数签名，添加默认值和 **kwargs 捕获。
-    # 这样即使模型漏传参数，也不会触发 Python TypeError 崩溃，而是返回清晰的错误信息让模型重试
     def execute(
         self,
         file_path: str = "",
@@ -131,7 +129,7 @@ class WriteFileTool(Tool):
         chunk_index: Optional[int] = None,
         total_chunks: Optional[int] = None,
         **kwargs: Any,
-    ) -> str:
+    ) -> ToolResult:
         """Write content to file. Supports chunked writing for large files."""
         # 兼容不同 Agent 框架传递参数的方式
         file_path = file_path or kwargs.get("file_path", "")
@@ -144,7 +142,7 @@ class WriteFileTool(Tool):
 
         # 优雅拦截缺失 file_path 的情况
         if not file_path:
-            return "Error: Execution failed. You MUST provide 'file_path' in your tool call."
+            return ToolResult(success=False, content="Error: Execution failed. You MUST provide 'file_path' in your tool call.", error_code=0)
 
         try:
             p = Path(file_path).expanduser().resolve()
@@ -152,14 +150,14 @@ class WriteFileTool(Tool):
             # 验证输入
             validation = self.validate_input(file_path=file_path, content=content, chunk_index=chunk_index)
             if not validation.valid:
-                return validation.message
+                return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
             # 创建父目录
             try:
                 if not p.parent.exists():
                     p.parent.mkdir(parents=True, exist_ok=True)
             except Exception as e:
-                return f"Error: Cannot create parent directory: {e}"
+                return ToolResult(success=False, content=f"Error: Cannot create parent directory: {e}", error_code=99)
 
             # 判断是覆盖还是追加
             is_chunked = chunk_index is not None and chunk_index > 1
@@ -192,10 +190,10 @@ class WriteFileTool(Tool):
                     else:
                         result += f" ({file_size} bytes)"
 
-            return result
+            return ToolResult(success=True, content=result)
 
         except Exception as e:
-            return f"Error writing file: {type(e).__name__} - {str(e)}"
+            return ToolResult(success=False, content=f"Error writing file: {type(e).__name__} - {str(e)}", error_code=99)
 
     def get_activity_description(self, kwargs: dict) -> str:
         """Get a short description of what the tool is doing."""

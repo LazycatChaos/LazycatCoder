@@ -12,7 +12,7 @@ Inspired by Claude Code's FileEditTool:
 import re
 from pathlib import Path
 from typing import Literal, Optional, Tuple, List
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 # Track file read timestamps to prevent editing unread files
@@ -252,7 +252,7 @@ class EditFileTool(Tool):
         old_string: Optional[str] = None,
         line_number: Optional[int] = None,
         insert_line: Optional[int] = None,
-    ) -> str:
+    ) -> ToolResult:
         """Execute the file editing operation."""
         # Handle insert_line alias
         if line_number is None and insert_line is not None:
@@ -267,7 +267,7 @@ class EditFileTool(Tool):
             line_number=line_number,
         )
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         p = Path(file_path).expanduser().resolve()
         
@@ -298,11 +298,11 @@ class EditFileTool(Tool):
                     # Use original old_string for replacement to preserve formatting
                     content = content.replace(old_string, new_string, 1)
                 else:
-                    return f"Error: Could not find the exact text to replace. The file may have been modified."
+                    return ToolResult(success=False, content="Error: Could not find the exact text to replace. The file may have been modified.", error_code=5)
             
             elif command == "insert_after":
                 if line_number < 1 or line_number > len(lines):
-                    return f"Error: Invalid line number {line_number}. File has {len(lines)} lines."
+                    return ToolResult(success=False, content=f"Error: Invalid line number {line_number}. File has {len(lines)} lines.", error_code=10)
                 # Insert after the specified line (1-based)
                 insert_index = line_number  # 0-based index after the line
                 new_lines = new_string.split('\n')
@@ -311,7 +311,7 @@ class EditFileTool(Tool):
             
             elif command == "insert_before":
                 if line_number < 1 or line_number > len(lines) + 1:
-                    return f"Error: Invalid line number {line_number}. File has {len(lines)} lines."
+                    return ToolResult(success=False, content=f"Error: Invalid line number {line_number}. File has {len(lines)} lines.", error_code=11)
                 # Insert before the specified line (1-based)
                 insert_index = line_number - 1  # 0-based index before the line
                 new_lines = new_string.split('\n')
@@ -366,10 +366,10 @@ class EditFileTool(Tool):
                 new_content_preview += "..."
             preview_lines.append(f"New content preview: {new_content_preview}")
             
-            return "\n".join(preview_lines)
+            return ToolResult(success=True, content="\n".join(preview_lines))
         
         except Exception as e:
-            return f"Error: Failed to edit file: {e}"
+            return ToolResult(success=False, content=f"Error: Failed to edit file: {e}", error_code=99)
 
     def get_activity_description(self, kwargs: dict) -> str:
         """Get a short description of what the tool is doing."""
