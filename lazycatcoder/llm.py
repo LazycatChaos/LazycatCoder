@@ -55,6 +55,7 @@ class LLM:
         **kwargs,
     ):
         self.model = model
+        self.timeout = timeout
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.extra = kwargs  # temperature, max_tokens, etc.
         self.total_prompt_tokens = 0
@@ -78,7 +79,7 @@ class LLM:
             params["tools"] = tools
 
         # Log before sending request to avoid confusion during long waits
-        print(f"📤 Sending request to {self.model}...")
+        print(f"Sending request to {self.model}...")
 
         # stream_options is an OpenAI extension; not all providers support it
         try:
@@ -87,6 +88,10 @@ class LLM:
         except Exception:
             params.pop("stream_options", None)
             stream = self._call_with_retry(params)
+
+        # Wrap stream with a total timeout to prevent infinite hangs
+        # when the server keeps the connection open but sends no data
+        stream = self._timeout_stream(stream, timeout=self.timeout)
 
         content_parts: list[str] = []
         tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
@@ -142,6 +147,23 @@ class LLM:
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
         )
+
+    def _timeout_stream(self, stream, timeout: int):
+        """Wrap a streaming response with a total timeout.
+
+        OpenAI SDK's timeout only controls per-chunk reads. If the server
+        keeps the connection open but sends no data, the stream can hang
+        indefinitely. This generator enforces a hard total time limit.
+        """
+        start = time.monotonic()
+        for chunk in stream:
+            elapsed = time.monotonic() - start
+            if elapsed > timeout:
+                raise APITimeoutError(
+                    f"LLM response exceeded total timeout of {timeout}s "
+                    f"(elapsed {elapsed:.1f}s)"
+                )
+            yield chunk
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         """Retry on transient errors with exponential backoff."""
