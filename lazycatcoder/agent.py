@@ -44,6 +44,7 @@ class Agent:
         auto_save: bool = True,
         workdir: Optional[str] = None,
         venv_path: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -58,8 +59,11 @@ class Agent:
         # Virtual environment path
         self.venv_path = venv_path
         
-        # System prompt with workdir
-        self._system = system_prompt(self.tools, self.workdir)
+        # System prompt: use override if provided, otherwise generate from tools
+        if system_prompt_override:
+            self._system = system_prompt_override
+        else:
+            self._system = system_prompt(self.tools, self.workdir)
         
         # Session management (Claude Code style real-time persistence)
         self.session_id = session_id
