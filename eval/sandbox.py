@@ -18,12 +18,16 @@ class Sandbox:
     def __init__(self, case_dir: str | Path):
         self.case_dir = Path(case_dir)
         self.workspace_src = self.case_dir / "workspace"
+        self.public_tests_src = self.case_dir / "public_tests"
         self.hidden_tests_src = self.case_dir / "hidden_tests"
         self._tmpdir: tempfile.TemporaryDirectory | None = None
         self.workdir: Path | None = None
 
     def setup(self) -> Path:
-        """Copy workspace → temp dir. Returns the temp workdir path."""
+        """Copy workspace → temp dir. Also copies public_tests if they exist.
+        
+        Returns the temp workdir path.
+        """
         if not self.workspace_src.exists():
             raise FileNotFoundError(f"Workspace not found: {self.workspace_src}")
 
@@ -38,6 +42,13 @@ class Sandbox:
                 shutil.copytree(src_item, dst_item)
             else:
                 shutil.copy2(src_item, dst_item)
+
+        # Copy public tests if they exist (Agent can see and run these)
+        if self.public_tests_src.exists():
+            for item in self.public_tests_src.iterdir():
+                dst = dest / item.name
+                if item.is_file():
+                    shutil.copy2(item, dst)
 
         self.workdir = dest
         return dest

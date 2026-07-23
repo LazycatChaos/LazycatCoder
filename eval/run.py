@@ -5,6 +5,7 @@ Usage:
     python -m eval.run --case case_001          # Run a specific case
     python -m eval.run --model gpt-4o           # Override model
     python -m eval.run --debug                  # Enable debug output
+    python -m eval.run --workers 4              # Run 4 cases in parallel
 """
 
 import argparse
@@ -65,6 +66,8 @@ def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug:
     case_id = case["case_id"]
     prompt = case["prompt"]
     case_dir = case["case_dir"]
+    meta = case.get("meta", {})
+    test_visibility = meta.get("test_visibility", "blind")
 
     if debug:
         print(f"\n{'='*60}")
@@ -74,13 +77,27 @@ def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug:
     sandbox = Sandbox(case_dir)
 
     try:
-        # 1. Setup sandbox (copy workspace to temp dir)
+        # 1. Setup sandbox (copy workspace + public_tests to temp dir)
         workdir = sandbox.setup()
         if debug:
             print(f"  Sandbox: {workdir}")
+            print(f"  Test visibility: {test_visibility}")
 
-        # 2. Run the agent
-        result = runner.run(str(workdir), prompt)
+        # 2. Append public test hint to prompt if applicable
+        agent_prompt = prompt
+        if test_visibility == "public" and sandbox.public_tests_src.exists():
+            public_test_files = list(sandbox.public_tests_src.glob("test_*.py"))
+            if public_test_files:
+                test_names = ", ".join(f.name for f in public_test_files)
+                agent_prompt += (
+                    f"\n\n## Available Tests\n"
+                    f"You can run `pytest {test_names}` to verify your changes.\n"
+                    f"These are public tests — there may be additional hidden tests "
+                    f"that check edge cases not covered here.\n"
+                )
+
+        # 3. Run the agent
+        result = runner.run(str(workdir), agent_prompt)
 
         if debug:
             print(f"  Agent rounds: {result['rounds']}, tokens: {result['total_tokens']}")
@@ -107,6 +124,7 @@ def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug:
             "error": result["error"],
             "test_output": eval_result["stderr"] or eval_result["stdout"],
             "timed_out": eval_result.get("timed_out", False),
+            "test_visibility": test_visibility,
         }
 
     except Exception as e:
@@ -121,11 +139,39 @@ def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug:
             "error": str(e),
             "test_output": None,
             "timed_out": False,
+            "test_visibility": test_visibility,
         }
 
     finally:
         # 5. Cleanup sandbox
         sandbox.teardown()
+
+
+def _run_single_case_worker(case_data: dict) -> dict:
+    """Self-contained worker function for multiprocessing.
+
+    This function creates its own runner and evaluator, so it can be
+    safely pickled and run in a separate process.
+    """
+    case = case_data["case"]
+    model = case_data["model"]
+    api_key = case_data["api_key"]
+    base_url = case_data["base_url"]
+    max_rounds = case_data["max_rounds"]
+    debug = case_data["debug"]
+    system_prompt = case_data["system_prompt"]
+
+    runner = EvalRunner(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        max_rounds=max_rounds,
+        debug=debug,
+        system_prompt=system_prompt,
+    )
+    evaluator = Evaluator()
+
+    return run_single_case(case, runner, evaluator, debug=debug)
 
 
 def main():
@@ -137,6 +183,7 @@ def main():
     parser.add_argument("--max-rounds", type=int, default=None, help="Override max rounds per case (default: from meta.yaml)")
     parser.add_argument("--difficulty", help="Filter by difficulty level (e.g. L1, L2)")
     parser.add_argument("--system-prompt", help="Path to a custom system prompt file (.md/.txt)")
+    parser.add_argument("--workers", type=int, default=1, help="Number of parallel workers (default: 1, sequential)")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     args = parser.parse_args()
 
@@ -170,7 +217,21 @@ def main():
         custom_system_prompt = prompt_path.read_text(encoding="utf-8")
         print(f"[Eval] Using custom system prompt: {prompt_path}")
 
-    # Initialize runner and evaluator
+    # Clamp workers to number of cases
+    workers = min(args.workers, len(cases))
+    if workers < 1:
+        workers = 1
+
+    print(f"\n[Eval] Running {len(cases)} eval case(s) with model: {args.model or 'default'}")
+    if args.max_rounds:
+        print(f"   Max rounds: {args.max_rounds} (override)")
+    else:
+        print(f"   Max rounds: per case meta.yaml")
+    if workers > 1:
+        print(f"   Workers: {workers} (parallel)")
+    print()
+
+    # Build runner config once
     runner = EvalRunner(
         model=args.model,
         api_key=args.api_key,
@@ -181,21 +242,47 @@ def main():
     )
     evaluator = Evaluator()
 
-    print(f"\n[Eval] Running {len(cases)} eval case(s) with model: {runner.model}")
-    if args.max_rounds:
-        print(f"   Max rounds: {args.max_rounds} (override)")
+    if workers == 1:
+        # Sequential execution (original behavior)
+        results = []
+        for case in cases:
+            case_max_rounds = args.max_rounds or case["meta"].get("max_rounds", 10)
+            runner.max_rounds = case_max_rounds
+            result = run_single_case(case, runner, evaluator, debug=args.debug)
+            results.append(result)
     else:
-        print(f"   Max rounds: per case meta.yaml")
-    print()
+        # Parallel execution using ProcessPoolExecutor
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    results = []
-    for case in cases:
-        # Use meta.yaml max_rounds if not overridden via CLI
-        case_max_rounds = args.max_rounds or case["meta"].get("max_rounds", 10)
-        runner.max_rounds = case_max_rounds
+        # Prepare worker data (must be picklable)
+        worker_data = []
+        for case in cases:
+            case_max_rounds = args.max_rounds or case["meta"].get("max_rounds", 10)
+            worker_data.append({
+                "case": case,
+                "model": args.model,
+                "api_key": args.api_key,
+                "base_url": args.base_url,
+                "max_rounds": case_max_rounds,
+                "debug": args.debug,
+                "system_prompt": custom_system_prompt,
+            })
 
-        result = run_single_case(case, runner, evaluator, debug=args.debug)
-        results.append(result)
+        results = [None] * len(cases)
+        completed = 0
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_idx = {
+                executor.submit(_run_single_case_worker, wd): i
+                for i, wd in enumerate(worker_data)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                result = future.result()
+                results[idx] = result
+                completed += 1
+                case_id = result["case_id"]
+                status = "PASS" if result["passed"] else "FAIL"
+                print(f"  [{completed}/{len(cases)}] {case_id}: {status}")
 
     # Print report
     print()
@@ -239,6 +326,7 @@ def save_results(results: list[dict], cases: list[dict], runner: EvalRunner, arg
                 "case_id": r["case_id"],
                 "difficulty": meta_map.get(r["case_id"], {}).get("difficulty", ""),
                 "category": meta_map.get(r["case_id"], {}).get("category", ""),
+                "test_visibility": r.get("test_visibility", "blind"),
                 "status": "pass" if r["passed"] else "fail",
                 "rounds_used": r["rounds"],
                 "total_tokens": r["total_tokens"],

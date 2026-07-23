@@ -23,13 +23,22 @@ import os
 import re
 from pathlib import Path
 from typing import Optional, Callable
-from .llm import LLM
+from .llm import LLM, StreamTimeoutError
 from .tools import ALL_TOOLS, get_tool
 from .tools.base import Tool, ToolResult
 from .tools.agent import AgentTool
 from .prompt import system_prompt
 from .context import ContextManager
 from .session import SessionManager, save_session, load_session
+
+# Import LLM error types for exception handling
+try:
+    from openai import APITimeoutError, APIConnectionError, RateLimitError
+except ImportError:
+    # Fallback if openai is not installed
+    APITimeoutError = Exception
+    APIConnectionError = Exception
+    RateLimitError = Exception
 
 
 class Agent:
@@ -143,12 +152,38 @@ class Agent:
                 from rich.console import Console
                 console = Console()
                 console.print(f"\n[dim]--- Round {round_count} ---[/dim]")
-            resp = self.llm.chat(
-                messages=self._full_messages(),
-                tools=self._tool_schemas(),
-                on_token=on_token,
-                debug=self.debug,
-            )
+
+            try:
+                resp = self.llm.chat(
+                    messages=self._full_messages(),
+                    tools=self._tool_schemas(),
+                    on_token=on_token,
+                    debug=self.debug,
+                )
+            except APIConnectionError as e:
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"\n[bold red]>>> LLM connection failed: {e}[/bold red]")
+                return f"⚠️ Cannot connect to model service. Please check network or API configuration."
+            except (APITimeoutError, StreamTimeoutError) as e:
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"\n[bold red]>>> LLM response timed out: {e}[/bold red]")
+                return f"⚠️ Model response timed out. Please try again or simplify your request."
+            except RateLimitError as e:
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"\n[bold red]>>> LLM rate limited: {e}[/bold red]")
+                return f"⚠️ API rate limit exceeded. Please wait and try again."
+            except Exception as e:
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"\n[bold red]>>> Unexpected LLM error: {e}[/bold red]")
+                return f"⚠️ Unexpected error: {e}"
             
             # Track token usage
             self._total_tokens_input += resp.prompt_tokens
