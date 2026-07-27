@@ -1,0 +1,18 @@
+id: case_002_slugify
+title: Add slugify function for URL-safe string conversion
+difficulty: L1
+category: feature_add
+
+tags:
+  - string_processing
+  - feature_add
+  - unicode
+
+max_rounds: 10
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - only_stdlib

@@ -1,0 +1,19 @@
+id: case_XXX_name
+title: Short description of the task
+difficulty: L1
+category: bug_fix
+
+tags:
+  - tag1
+  - tag2
+
+max_rounds: 10
+timeout_s: 30
+
+# Test visibility: "public" (Agent can see and run tests) or "blind" (no tests visible)
+# If public_tests/ directory exists, this should be "public"
+test_visibility: blind
+
+constraints:
+  - no_new_dependencies
+  - existing_tests_must_pass

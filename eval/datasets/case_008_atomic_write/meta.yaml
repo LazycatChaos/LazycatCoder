@@ -1,0 +1,18 @@
+id: case_008_atomic_write
+title: Fix atomic JSON file writes
+difficulty: L2
+category: bug_fix
+
+tags:
+  - filesystem
+  - atomic_write
+  - error_handling
+
+max_rounds: 10
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - public_api_unchanged

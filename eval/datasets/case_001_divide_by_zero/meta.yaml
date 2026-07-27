@@ -1,0 +1,19 @@
+id: case_001_divide_by_zero
+title: Fix divide-by-zero bug in safe_divide
+difficulty: L1
+category: bug_fix
+
+tags:
+  - division
+  - zero_division
+  - error_handling
+
+max_rounds: 10
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - existing_tests_must_pass
+  - do_not_modify_divide_function

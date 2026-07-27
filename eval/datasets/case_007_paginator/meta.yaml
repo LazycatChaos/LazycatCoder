@@ -1,0 +1,18 @@
+id: case_007_paginator
+title: Fix paginator edge cases
+difficulty: L2
+category: bug_fix
+
+tags:
+  - pagination
+  - boundary_conditions
+  - api_compatibility
+
+max_rounds: 10
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - public_api_unchanged
