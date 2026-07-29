@@ -18,6 +18,12 @@ class StreamTimeoutError(Exception):
     pass
 
 
+# Known model prefixes that do NOT support the `temperature` parameter.
+# New Claude 4+ models reject temperature with a 400 error.
+NO_TEMPERATURE_MODELS = ("claude-4", "claude-sonnet-4", "claude-opus-4", 'claude-fable-5')
+NO_THINKING_MODELS = ("gpt-",)
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -92,7 +98,8 @@ class LLM:
             "model": self.model,
             "messages": messages,
             "stream": True,
-            **self.extra,
+            'extra_body': {"enable_thinking": False},
+            **self._strip_unsupported_params(self.extra),
         }
         if tools:
             params["tools"] = tools
@@ -164,6 +171,15 @@ class LLM:
             completion_tokens=completion_tok,
         )
 
+    def _strip_unsupported_params(self, params: dict) -> dict:
+        """Filter out parameters not supported by the current model."""
+        params = dict(params)  # don't mutate original
+        if any(self.model.startswith(p) for p in NO_TEMPERATURE_MODELS):
+            params.pop("temperature", None)
+        if any(self.model.startswith(p) for p in NO_THINKING_MODELS):
+            params.pop("extra_body", None)
+        return params
+
     def _timeout_stream(self, stream, timeout: int):
         """Wrap a streaming response with a total timeout.
 
@@ -210,6 +226,16 @@ class LLM:
                 print(f"  [LLM] {type(e).__name__}, retry in {wait}s...")
                 time.sleep(wait)
             except APIError as e:
+                # 400 about temperature: strip it and retry once (catches new models
+                # not yet in NO_TEMPERATURE_MODELS)
+                if (
+                    e.status_code == 400
+                    and attempt == 0
+                    and "temperature" in str(e.message).lower()
+                ):
+                    print("  [LLM] temperature deprecated for this model, retrying without it...")
+                    params.pop("temperature", None)
+                    continue
                 # 5xx = server error, retry; 4xx = client error, don't
                 if e.status_code and e.status_code >= 500 and attempt < max_attempts - 1:
                     wait = 2 ** attempt

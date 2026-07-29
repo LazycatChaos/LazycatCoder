@@ -61,7 +61,7 @@ def load_cases(datasets_dir: Path = DATASETS_DIR) -> list[dict]:
     return cases
 
 
-def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug: bool = False) -> dict:
+def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug: bool = False, keep_sandbox: bool = False) -> dict:
     """Run one eval case: sandbox → agent → evaluate → cleanup."""
     case_id = case["case_id"]
     prompt = case["prompt"]
@@ -74,7 +74,7 @@ def run_single_case(case: dict, runner: EvalRunner, evaluator: Evaluator, debug:
         print(f"Running: {case_id}")
         print(f"{'='*60}")
 
-    sandbox = Sandbox(case_dir)
+    sandbox = Sandbox(case_dir, keep=keep_sandbox)
 
     try:
         # 1. Setup sandbox (copy workspace + public_tests to temp dir)
@@ -160,6 +160,7 @@ def _run_single_case_worker(case_data: dict) -> dict:
     max_rounds = case_data["max_rounds"]
     debug = case_data["debug"]
     system_prompt = case_data["system_prompt"]
+    keep_sandbox = case_data.get("keep_sandbox", False)
 
     runner = EvalRunner(
         model=model,
@@ -171,7 +172,7 @@ def _run_single_case_worker(case_data: dict) -> dict:
     )
     evaluator = Evaluator()
 
-    return run_single_case(case, runner, evaluator, debug=debug)
+    return run_single_case(case, runner, evaluator, debug=debug, keep_sandbox=keep_sandbox)
 
 
 def main():
@@ -185,6 +186,7 @@ def main():
     parser.add_argument("--system-prompt", help="Path to a custom system prompt file (.md/.txt)")
     parser.add_argument("--workers", type=int, default=1, help="Number of parallel workers (default: 1, sequential)")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("--keep-sandbox", action="store_true", help="Keep temp sandbox dirs after run (for debugging)")
     args = parser.parse_args()
 
     # Load cases from datasets/
@@ -248,7 +250,7 @@ def main():
         for case in cases:
             case_max_rounds = args.max_rounds or case["meta"].get("max_rounds", 10)
             runner.max_rounds = case_max_rounds
-            result = run_single_case(case, runner, evaluator, debug=args.debug)
+            result = run_single_case(case, runner, evaluator, debug=args.debug, keep_sandbox=args.keep_sandbox)
             results.append(result)
     else:
         # Parallel execution using ProcessPoolExecutor
@@ -266,6 +268,7 @@ def main():
                 "max_rounds": case_max_rounds,
                 "debug": args.debug,
                 "system_prompt": custom_system_prompt,
+                "keep_sandbox": args.keep_sandbox,
             })
 
         results = [None] * len(cases)

@@ -77,7 +77,7 @@ class GrepTool(Tool):
             pattern: str,
             path: Optional[str] = None,
             glob: Optional[str] = None,
-            output_mode: Literal["content", "files_with_matches", "count"] = "files_with_matches",
+            output_mode: Literal["content", "files_with_matches", "count"] = "content",
             before_context: Optional[int] = None,
             after_context: Optional[int] = None,
             context: Optional[int] = None,
@@ -96,7 +96,6 @@ class GrepTool(Tool):
         rg_executable = shutil.which('rg') or shutil.which('rg.exe')
         if not rg_executable:
             return ToolResult(success=False, content="Error: ripgrep (rg.exe) not found on Windows. Please install it using 'winget install ripgrep' or 'scoop install ripgrep'.", error_code=10)
-
         args = [rg_executable, "--hidden"]
 
         for vcs_dir in self.VCS_DIRS:
@@ -133,7 +132,6 @@ class GrepTool(Tool):
                 if g: args.extend(["--glob", g])
 
         search_path = str(Path(path).expanduser().resolve()) if path else os.getcwd()
-
         try:
             # shell=False 提高安全性，直接调用原生 exe
             result = subprocess.run(
@@ -145,7 +143,6 @@ class GrepTool(Tool):
                 timeout=60,
                 shell=False
             )
-
             lines = result.stdout.strip().split("\n") if result.stdout.strip() else []
 
             applied_limit = head_limit if head_limit is not None else self.DEFAULT_HEAD_LIMIT
@@ -161,7 +158,12 @@ class GrepTool(Tool):
             if output_mode == "content":
                 content = "\n".join(final_lines)
                 if not content: return ToolResult(success=True, content="No matches found")
-                if limit_info: content += f"\n\n[Showing results with pagination = {limit_info}]"
+                if limit_info:
+                    content += (
+                        f"\n\n[Showing results with pagination = {limit_info}. "
+                        f"Results truncated — your search pattern is too broad. "
+                        f"Try a more specific pattern to get fewer, more relevant matches.]"
+                    )
                 return ToolResult(success=True, content=content)
 
             elif output_mode == "count":

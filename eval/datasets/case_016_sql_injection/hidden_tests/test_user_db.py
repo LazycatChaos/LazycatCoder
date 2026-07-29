@@ -117,26 +117,47 @@ class TestStackedQueries:
 
 
 class TestParameterizedQuery:
-    """Tests to verify parameterized queries are used."""
+    """Tests to verify parameterized queries are used via AST analysis."""
+
+    def _verify_sql_is_constant(self, func):
+        """Helper to ensure cursor.execute() uses a static string literal."""
+        import ast
+        import inspect
+        
+        source = inspect.getsource(func)
+        tree = ast.parse(source)
+        
+        execute_called = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                # Check if this is a call to .execute()
+                if isinstance(node.func, ast.Attribute) and node.func.attr == 'execute':
+                    execute_called = True
+                    sql_arg = node.args[0]
+                    # The first argument (SQL) MUST be a string constant.
+                    # It cannot be an f-string (JoinedStr) or concatenation (BinOp).
+                    is_constant_str = isinstance(sql_arg, ast.Constant) and isinstance(sql_arg.value, str)
+                    assert is_constant_str, (
+                        f"{func.__name__} must use a literal string for the SQL query, "
+                        f"not dynamically constructed strings."
+                    )
+        
+        assert execute_called, f"{func.__name__} must call cursor.execute()"
 
     def test_uses_parameterized_query_get_user(self):
-        """get_user must use parameterized queries (? placeholders)."""
+        """get_user must use parameterized queries safely."""
+        self._verify_sql_is_constant(get_user)
+        # Double check placeholder exists in source (as a basic sanity check)
         import inspect
         source = inspect.getsource(get_user)
         assert "?" in source, "get_user must use parameterized queries with ? placeholders"
-        # Should NOT use f-string or .format() for SQL construction
-        assert "f\"" not in source and "f'" not in source, (
-            "get_user must not use f-strings for SQL queries"
-        )
 
     def test_uses_parameterized_query_search(self):
-        """search_users must use parameterized queries."""
+        """search_users must use parameterized queries safely."""
+        self._verify_sql_is_constant(search_users)
         import inspect
         source = inspect.getsource(search_users)
         assert "?" in source, "search_users must use parameterized queries with ? placeholders"
-        assert "f\"" not in source and "f'" not in source, (
-            "search_users must not use f-strings for SQL queries"
-        )
 
 
 class TestEdgeCases:

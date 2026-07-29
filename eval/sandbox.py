@@ -15,12 +15,13 @@ class Sandbox:
         sandbox.teardown()
     """
 
-    def __init__(self, case_dir: str | Path):
+    def __init__(self, case_dir: str | Path, keep: bool = False):
         self.case_dir = Path(case_dir)
         self.workspace_src = self.case_dir / "workspace"
         self.public_tests_src = self.case_dir / "public_tests"
         self.hidden_tests_src = self.case_dir / "hidden_tests"
-        self._tmpdir: tempfile.TemporaryDirectory | None = None
+        self._tmpdir_path: str | None = None
+        self._keep = keep  # if True, don't delete on teardown
         self.workdir: Path | None = None
 
     def setup(self) -> Path:
@@ -31,8 +32,8 @@ class Sandbox:
         if not self.workspace_src.exists():
             raise FileNotFoundError(f"Workspace not found: {self.workspace_src}")
 
-        self._tmpdir = tempfile.TemporaryDirectory()
-        dest = Path(self._tmpdir.name)
+        self._tmpdir_path = tempfile.mkdtemp()
+        dest = Path(self._tmpdir_path)
 
         # Copy all files from workspace into temp dir
         for item in self.workspace_src.iterdir():
@@ -71,8 +72,11 @@ class Sandbox:
         return self.workdir
 
     def teardown(self):
-        """Remove the temporary directory."""
-        if self._tmpdir:
-            self._tmpdir.cleanup()
-            self._tmpdir = None
+        """Remove the temporary directory (unless keep=True)."""
+        if self._tmpdir_path:
+            if not self._keep:
+                shutil.rmtree(self._tmpdir_path, ignore_errors=True)
+            else:
+                print(f"  [Sandbox] Keeping temp dir: {self._tmpdir_path}")
+            self._tmpdir_path = None
             self.workdir = None
