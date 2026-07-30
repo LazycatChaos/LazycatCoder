@@ -96,7 +96,21 @@ def main():
         loaded = load_session(args.resume)
         if loaded:
             agent.messages, loaded_model, metadata = loaded
+            if metadata.system_errors:
+                agent.restore_error_history(metadata.system_errors)
             console.print(f"[green]Resumed session: {args.resume}[/green]")
+            # Show session health status
+            if metadata.system_errors:
+                error_types = [e.get("error_type", "") for e in metadata.system_errors]
+                if "api_error" in error_types:
+                    console.print(f"[yellow]🔌 This session was previously interrupted by API/Network issues ({error_types.count('api_error')} times)[/yellow]")
+                if "tool_crash" in error_types:
+                    crashed = set(e.get("tool", "?") for e in metadata.system_errors if e.get("error_type") == "tool_crash")
+                    console.print(f"[yellow]💥 This session had tool failures: {', '.join(crashed)}[/yellow]")
+                if "llm_parse_error" in error_types:
+                    console.print(f"[yellow]🧠 This session had LLM parsing difficulties ({error_types.count('llm_parse_error')} times)[/yellow]")
+            else:
+                console.print("[green]✅ Session status: Healthy[/green]")
         else:
             console.print(f"[red]Session '{args.resume}' not found.[/red]")
             sys.exit(1)
@@ -233,10 +247,44 @@ def _repl(agent: Agent, config: Config):
                    if stats['rounds'] > 0 else "")
                 + f"\n  Context tokens:      {ctx_tokens} / {agent.context.max_tokens} ({ctx_pct:.1f}%)\n"
                 f"  Messages in context: {len(agent.messages)}\n"
-                f"  Errors this session: {len(agent.get_all_errors())}",
+                f"  Errors this session: {agent.get_error_summary()['total']}"
+                + (lambda s: (
+                    "\n  └ API errors:        " + str(s["by_type"].get("api_error", 0)) +
+                    "\n  └ Tool crashes:      " + str(s["by_type"].get("tool_crash", 0)) +
+                    "\n  └ LLM parse errors:  " + str(s["by_type"].get("llm_parse_error", 0))
+                ) if s["total"] else "")(agent.get_error_summary()),
                 title="Usage",
                 border_style="cyan",
             ))
+            continue
+        if user_input == "/errors":
+            summary = agent.get_error_summary()
+            if summary["total"] == 0:
+                console.print("[green]✅ No errors in this session.[/green]")
+            else:
+                lines = [f"[bold]Error Analysis Report[/bold] ({summary['total']} total)\n"]
+                # By type
+                lines.append("[dim]By type:[/dim]")
+                for etype, count in sorted(summary["by_type"].items(), key=lambda x: -x[1]):
+                    label = {"api_error": "🔌 API errors", "tool_crash": "💥 Tool crashes", "llm_parse_error": "🧠 LLM parse errors"}.get(etype, f"⚠️ {etype}")
+                    lines.append(f"  {label}: {count}")
+                # By tool
+                if summary["by_tool"]:
+                    lines.append("\n[dim]By tool:[/dim]")
+                    for tool, count in sorted(summary["by_tool"].items(), key=lambda x: -x[1]):
+                        lines.append(f"  {tool or '(N/A)'}: {count}")
+                # Details for tool_crash and llm_parse_error
+                for etype, label in [("tool_crash", "💥 Tool crash details"), ("llm_parse_error", "🧠 LLM parse error details")]:
+                    entries = summary["details"].get(etype, [])
+                    if entries:
+                        lines.append(f"\n[dim]{label}:[/dim]")
+                        for i, e in enumerate(entries, 1):
+                            lines.append(f"  [{i}] turn {e.get('turn', '?')} | {e.get('tool', '?')}: {e.get('message', '')}")
+                            if etype == "llm_parse_error" and e.get("raw_args"):
+                                lines.append(f"      raw_args: {e['raw_args'][:120]}")
+                            elif etype == "tool_crash" and e.get("arguments"):
+                                lines.append(f"      arguments: {str(e['arguments'])[:120]}")
+                console.print(Panel("\n".join(lines), title="Errors", border_style="yellow"))
             continue
         if user_input.startswith("/model "):
             new_model = user_input[7:].strip()
@@ -279,8 +327,21 @@ def _repl(agent: Agent, config: Config):
                 console.print("[dim]No saved sessions.[/dim]")
             else:
                 for s in sessions:
-                    s = s.to_dict()
-                    console.print(f"  [cyan]{s['id']}[/cyan] ({s['model']}, {s['saved_at']}) {s['summary']}")
+                    d = s.to_dict()
+                    # Error status indicator
+                    if d.get("system_errors"):
+                        error_types = [e.get("error_type", "") for e in d["system_errors"]]
+                        if "api_error" in error_types:
+                            icon = "🔌"
+                        elif "tool_crash" in error_types:
+                            icon = "💥"
+                        elif "llm_parse_error" in error_types:
+                            icon = "🧠"
+                        else:
+                            icon = "⚠️"
+                    else:
+                        icon = "✅"
+                    console.print(f"  {icon} [cyan]{d['id']}[/cyan] ({d['model']}, {d['saved_at']}) {d['summary']}")
             continue
 
         # call the agent
@@ -319,6 +380,7 @@ def _show_help():
         "  /venv [path]   Show or set virtual environment\n"
         "  /tokens        Show token usage (total)\n"
         "  /usage         Show detailed usage report (per-round avg, context %)\n"
+        "  /errors        Show error analysis report (by type, by tool, details)\n"
         "  /compact       Compress conversation context\n"
         "  /save          Save session to disk\n"
         "  /sessions      List saved sessions\n"

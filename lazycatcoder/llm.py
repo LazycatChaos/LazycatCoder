@@ -37,6 +37,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    parse_errors: list[dict] = field(default_factory=list)
 
     @property
     def message(self) -> dict:
@@ -153,12 +154,18 @@ class LLM:
 
         # parse accumulated tool calls
         parsed: list[ToolCall] = []
+        parse_errors: list[dict] = []
         for idx in sorted(tc_map):
             raw = tc_map[idx]
             try:
                 args = json.loads(raw["args"])
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError) as e:
                 args = {}
+                parse_errors.append({
+                    "tool": raw.get("name", "?"),
+                    "raw_args": raw.get("args", "")[:200],
+                    "error": str(e),
+                })
             parsed.append(ToolCall(id=raw["id"], name=raw["name"], arguments=args))
 
         self.total_prompt_tokens += prompt_tok
@@ -169,6 +176,7 @@ class LLM:
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
+            parse_errors=parse_errors,
         )
 
     def _strip_unsupported_params(self, params: dict) -> dict:

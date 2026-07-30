@@ -161,24 +161,28 @@ class Agent:
                     debug=self.debug,
                 )
             except APIConnectionError as e:
+                self._log_error("api_error", f"Connection failed: {e}")
                 if self.debug:
                     from rich.console import Console
                     console = Console()
                     console.print(f"\n[bold red]>>> LLM connection failed: {e}[/bold red]")
                 return f"⚠️ Cannot connect to model service. Please check network or API configuration."
             except (APITimeoutError, StreamTimeoutError) as e:
+                self._log_error("api_error", f"Timeout: {e}")
                 if self.debug:
                     from rich.console import Console
                     console = Console()
                     console.print(f"\n[bold red]>>> LLM response timed out: {e}[/bold red]")
                 return f"⚠️ Model response timed out. Please try again or simplify your request."
             except RateLimitError as e:
+                self._log_error("api_error", f"Rate limit exceeded: {e}")
                 if self.debug:
                     from rich.console import Console
                     console = Console()
                     console.print(f"\n[bold red]>>> LLM rate limited: {e}[/bold red]")
                 return f"⚠️ API rate limit exceeded. Please wait and try again."
             except Exception as e:
+                self._log_error("api_error", f"Unexpected: {type(e).__name__}: {e}")
                 if self.debug:
                     from rich.console import Console
                     console = Console()
@@ -188,6 +192,10 @@ class Agent:
             # Track token usage
             self._total_tokens_input += resp.prompt_tokens
             self._total_tokens_output += resp.completion_tokens
+
+            # Log LLM parse errors (malformed tool call JSON from model)
+            for pe in resp.parse_errors:
+                self._log_error("llm_parse_error", f"Tool '{pe['tool']}': {pe['error']}", tool=pe["tool"], arguments={"raw_args": pe.get("raw_args", "")})
 
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
@@ -372,7 +380,7 @@ class Agent:
             return content
         except Exception as e:
             # Log error with watermark for turn-scoped isolation
-            self._log_error(tc.name, tc.arguments, e)
+            self._log_error("tool_crash", str(e), tool=tc.name, arguments=tc.arguments)
             if self.debug:
                 from rich.console import Console
                 from rich.panel import Panel
@@ -397,14 +405,20 @@ class Agent:
                 else:
                     stats["success"] += 1
 
-    def _log_error(self, tool_name: str, arguments: dict, error: Exception):
-        """Log an error with diagnostic info (Claude Code style)."""
+    def _log_error(self, error_type: str, message: str, tool: str = None, arguments: dict = None):
+        """Log a structured system error (not business-level tool failures).
+
+        error_type categories:
+        - "tool_crash":      tool raised an unhandled exception
+        - "api_error":       LLM API failure (rate limit, timeout, connection)
+        - "llm_parse_error": LLM output could not be parsed as valid tool call
+        """
         self._error_log.append({
             "turn": self._round_count,
-            "tool": tool_name,
+            "error_type": error_type,
+            "message": message,
+            "tool": tool,
             "arguments": arguments,
-            "error_type": type(error).__name__,
-            "error_message": str(error),
             "timestamp": time.time(),
         })
 
@@ -502,6 +516,55 @@ class Agent:
         """Get all errors from this session."""
         return self._error_log
 
+    def get_error_summary(self) -> dict:
+        """Get aggregated error statistics for analysis.
+
+        Returns:
+        {
+            "total": 5,
+            "by_type": {"api_error": 2, "tool_crash": 1, "llm_parse_error": 2},
+            "by_tool": {"grep": 3, "read_file": 1, None: 1},
+            "details": {
+                "tool_crash": [
+                    {"tool": "grep", "message": "...", "arguments": {...}, "turn": 2},
+                ],
+                "llm_parse_error": [
+                    {"tool": "grep", "message": "...", "raw_args": "...", "turn": 3},
+                ],
+                "api_error": [
+                    {"message": "...", "turn": 1},
+                ],
+            },
+        }
+        """
+        by_type: dict[str, int] = {}
+        by_tool: dict[str, int] = {}
+        details: dict[str, list[dict]] = {}
+
+        for e in self._error_log:
+            etype = e.get("error_type", "unknown")
+            tool = e.get("tool")
+
+            by_type[etype] = by_type.get(etype, 0) + 1
+            by_tool[tool] = by_tool.get(tool, 0) + 1
+
+            details.setdefault(etype, []).append({
+                "tool": tool,
+                "message": e.get("message", ""),
+                "turn": e.get("turn"),
+                **({"raw_args": e.get("arguments", {}).get("raw_args", "")}
+                   if etype == "llm_parse_error" and e.get("arguments") else {}),
+                **({"arguments": e.get("arguments")}
+                   if etype == "tool_crash" and e.get("arguments") else {}),
+            })
+
+        return {
+            "total": len(self._error_log),
+            "by_type": by_type,
+            "by_tool": by_tool,
+            "details": details,
+        }
+
     def get_usage_stats(self) -> dict:
         """Get token usage statistics."""
         return {
@@ -547,9 +610,9 @@ class Agent:
     def save_session(self) -> str:
         """Manually save the current session."""
         if not self.session_id:
-            self.session_id = save_session(self.messages, self.llm.model)
+            self.session_id = save_session(self.messages, self.llm.model, system_errors=self.get_all_errors())
         else:
-            save_session(self.messages, self.llm.model, self.session_id)
+            save_session(self.messages, self.llm.model, self.session_id, system_errors=self.get_all_errors())
         return self.session_id
 
     def flush_session(self):
@@ -557,10 +620,20 @@ class Agent:
         if self.auto_save and self._session_manager:
             try:
                 self._run_async(self._session_manager.flush(
-                    self.messages, self.llm.model
+                    self.messages, self.llm.model, system_errors=self.get_all_errors()
                 ), timeout=10)
             except Exception:
                 pass  # Don't crash on exit if flush fails
+
+    def restore_error_history(self, historical_errors: list[dict]):
+        """Restore historical error records (used for session resume).
+
+        Ensures the error watermark is pushed past all restored entries so
+        they are not mistaken for new errors in the current turn.
+        """
+        if historical_errors:
+            self._error_log = list(historical_errors)
+            self._error_watermark = len(self._error_log)
 
     def reset(self):
         """Clear conversation history."""

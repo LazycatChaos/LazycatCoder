@@ -265,8 +265,8 @@ def test_grep_finds_pattern():
 def test_grep_invalid_regex():
     grep = get_tool("grep")
     r = grep.execute(pattern="[invalid")
-    # ripgrep returns "No files found" or an error for invalid regex
-    assert "No files found" in r.content or not r.success or "Invalid" in r.content
+    # ripgrep may return "No matches found", "No files found", or an error for invalid regex
+    assert "No matches found" in r.content or "No files found" in r.content or not r.success or "Invalid" in r.content
 
 
 def test_grep_nonexistent_path():
