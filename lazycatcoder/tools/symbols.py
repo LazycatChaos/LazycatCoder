@@ -8,7 +8,7 @@ reading the full code.
 import ast
 from pathlib import Path
 from typing import Optional
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 class GetFileSymbolsTool(Tool):
@@ -75,11 +75,11 @@ class GetFileSymbolsTool(Tool):
         self,
         filepath: str,
         include_private: bool = False,
-    ) -> str:
+    ) -> ToolResult:
         """Extract class and function signatures from a Python file."""
         validation = self.validate_input(filepath=filepath)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         p = Path(filepath).expanduser().resolve()
 
@@ -87,9 +87,9 @@ class GetFileSymbolsTool(Tool):
             source = p.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source, filename=str(p))
         except SyntaxError as e:
-            return f"Error: Failed to parse {filepath}: {e}"
+            return ToolResult(success=False, content=f"Error: Failed to parse {filepath}: {e}", error_code=10)
         except (UnicodeDecodeError, OSError) as e:
-            return f"Error: Failed to read {filepath}: {e}"
+            return ToolResult(success=False, content=f"Error: Failed to read {filepath}: {e}", error_code=11)
 
         lines: list[str] = []
         for node in tree.body:
@@ -110,10 +110,10 @@ class GetFileSymbolsTool(Tool):
                 lines.append(f"def {node.name}({args})")
 
         if not lines:
-            return f"No public symbols found in {filepath}"
+            return ToolResult(success=True, content=f"No public symbols found in {filepath}")
 
         header = f"File symbols: {p}\n"
-        return header + "\n".join(lines)
+        return ToolResult(success=True, content=header + "\n".join(lines))
 
     @staticmethod
     def _format_args(args: ast.arguments) -> str:

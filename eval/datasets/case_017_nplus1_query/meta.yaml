@@ -1,0 +1,20 @@
+id: case_017_nplus1_query
+title: Fix N+1 query in user orders retrieval
+difficulty: L3
+category: performance_fix
+
+tags:
+  - performance
+  - n_plus_one
+  - sql_optimization
+  - join
+  - sqlite3
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - only_stdlib

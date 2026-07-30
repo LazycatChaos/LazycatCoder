@@ -14,7 +14,7 @@ import subprocess
 import shutil
 from pathlib import Path
 from typing import Optional, Literal, Callable
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 # 跨命令跟踪当前工作目录
 _cwd: Optional[str] = None
@@ -96,22 +96,26 @@ class BashTool(Tool):
             )
         return ValidationResult(valid=True)
 
-    def execute(self, command: str, timeout: int = 120) -> str:
+    def execute(self, command: str, timeout: int = 120) -> ToolResult:
         global _cwd
 
         validation = self.validate_input(command)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         cwd = self.workdir or _cwd or os.getcwd()
 
         interactive_warning = self._check_interactive(command)
         if interactive_warning:
-            return (
-                f"Error: 检测到交互式命令，不适合在无头工具中运行。\n"
-                f"命令: {command}\n"
-                f"原因: {interactive_warning}\n"
-                f"建议: 使用 -c 参数传递代码或添加 non-interactive 标志。"
+            return ToolResult(
+                success=False,
+                content=(
+                    f"Error: 检测到交互式命令，不适合在无头工具中运行。\n"
+                    f"命令: {command}\n"
+                    f"原因: {interactive_warning}\n"
+                    f"建议: 使用 -c 参数传递代码或添加 non-interactive 标志。"
+                ),
+                error_code=3,
             )
 
         # 1. 注入虚拟环境激活
@@ -152,7 +156,7 @@ class BashTool(Tool):
             except subprocess.TimeoutExpired:
                 _kill_process_tree(proc.pid)
                 proc.wait()
-                return f"Error: timed out after {timeout}s (process killed)"
+                return ToolResult(success=False, content=f"Error: timed out after {timeout}s (process killed)", error_code=4)
 
             stdout = _decode_output(stdout_bytes)
             stderr = _decode_output(stderr_bytes)
@@ -181,10 +185,10 @@ class BashTool(Tool):
                         + out[-tail_size:]
                 )
 
-            return out.strip() or "(Command completed successfully, no output)"
+            return ToolResult(success=True, content=out.strip() or "(Command completed successfully, no output)")
 
         except Exception as e:
-            return f"Error running command: {str(e)}"
+            return ToolResult(success=False, content=f"Error running command: {str(e)}", error_code=99)
 
     def _extract_and_update_cwd(self, stdout: str) -> tuple[str, Optional[str]]:
         if not stdout:

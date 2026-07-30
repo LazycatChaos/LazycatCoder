@@ -1,0 +1,18 @@
+id: case_003_parse_duration
+title: Fix duration parsing bug — Agent must locate the bug
+difficulty: L2
+category: bug_fix
+
+tags:
+  - bug_fix
+  - time_parsing
+  - debugging
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - only_stdlib

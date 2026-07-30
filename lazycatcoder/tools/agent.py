@@ -8,7 +8,7 @@ its own context window.
 The sub-agent runs to completion and returns a text summary.
 """
 
-from .base import Tool
+from .base import Tool, ToolResult
 
 
 class AgentTool(Tool):
@@ -33,9 +33,9 @@ class AgentTool(Tool):
     # set by Agent.__init__ after construction
     _parent_agent = None
 
-    def execute(self, task: str) -> str:
+    def execute(self, task: str) -> ToolResult:
         if self._parent_agent is None:
-            return "Error: agent tool not initialized (no parent agent)"
+            return ToolResult(success=False, content="Error: agent tool not initialized (no parent agent)", error_code=1)
 
         # import here to avoid circular dep
         from ..agent import Agent
@@ -50,9 +50,14 @@ class AgentTool(Tool):
 
         try:
             result = sub.chat(task)
+            # Handle ToolResult from sub-agent
+            if isinstance(result, ToolResult):
+                content = result.content
+            else:
+                content = str(result)
             # trim long results to avoid blowing up parent's context
-            if len(result) > 5000:
-                result = result[:4500] + "\n... (sub-agent output truncated)"
-            return f"[Sub-agent completed]\n{result}"
+            if len(content) > 5000:
+                content = content[:4500] + "\n... (sub-agent output truncated)"
+            return ToolResult(success=True, content=f"[Sub-agent completed]\n{content}")
         except Exception as e:
-            return f"Sub-agent error: {e}"
+            return ToolResult(success=False, content=f"Sub-agent error: {e}", error_code=99)

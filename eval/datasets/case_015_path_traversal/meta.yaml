@@ -1,0 +1,19 @@
+id: case_015_path_traversal
+title: Fix path traversal vulnerability in file reader
+difficulty: L2
+category: security_fix
+
+tags:
+  - security
+  - path_traversal
+  - input_validation
+  - os_path
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - only_stdlib

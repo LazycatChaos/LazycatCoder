@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 class DeleteFileTool(Tool):
@@ -42,10 +42,10 @@ class DeleteFileTool(Tool):
             return ValidationResult(valid=False, message="Error: file_path cannot be empty", error_code=1)
         return ValidationResult(valid=True)
 
-    def execute(self, file_path: str) -> str:
+    def execute(self, file_path: str) -> ToolResult:
         validation = self.validate_input(file_path)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         # Resolve to absolute path
         if not os.path.isabs(file_path):
@@ -59,25 +59,33 @@ class DeleteFileTool(Tool):
         resolved = os.path.realpath(file_path)
 
         if not (resolved == workdir or resolved.startswith(workdir + os.sep)):
-            return (
-                f"Error: Path '{file_path}' is outside the working directory. "
-                f"Deletion is restricted to '{self.workdir or os.getcwd()}' for safety."
+            return ToolResult(
+                success=False,
+                content=(
+                    f"Error: Path '{file_path}' is outside the working directory. "
+                    f"Deletion is restricted to '{self.workdir or os.getcwd()}' for safety."
+                ),
+                error_code=10,
             )
 
         if not os.path.exists(resolved):
-            return f"Error: File not found: {file_path}"
+            return ToolResult(success=False, content=f"Error: File not found: {file_path}", error_code=11)
 
         if os.path.isdir(resolved):
-            return (
-                f"Error: Cannot delete directory '{file_path}'. "
-                f"delete_file only supports regular files. "
-                f"Directory deletion is intentionally disabled for safety."
+            return ToolResult(
+                success=False,
+                content=(
+                    f"Error: Cannot delete directory '{file_path}'. "
+                    f"delete_file only supports regular files. "
+                    f"Directory deletion is intentionally disabled for safety."
+                ),
+                error_code=12,
             )
 
         try:
             os.remove(resolved)
-            return f"Deleted: {file_path}"
+            return ToolResult(success=True, content=f"Deleted: {file_path}")
         except PermissionError:
-            return f"Error: Permission denied: {file_path}"
+            return ToolResult(success=False, content=f"Error: Permission denied: {file_path}", error_code=13)
         except Exception as e:
-            return f"Error: Failed to delete file: {e}"
+            return ToolResult(success=False, content=f"Error: Failed to delete file: {e}", error_code=99)

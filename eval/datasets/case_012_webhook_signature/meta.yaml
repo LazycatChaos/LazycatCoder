@@ -1,0 +1,20 @@
+id: case_012_webhook_signature
+title: Add secure webhook signature verification with replay protection
+difficulty: L3
+category: feature_add
+
+tags:
+  - security
+  - hmac
+  - replay_protection
+  - constant_time_compare
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - only_stdlib
+  - must_use_constant_time_compare

@@ -1,0 +1,21 @@
+id: case_006_http_client
+title: Add timeout and retry to HTTP client
+difficulty: L3
+category: feature_add
+
+tags:
+  - http
+  - timeout
+  - retry
+  - backward_compatibility
+  - error_handling
+
+max_rounds: 15
+timeout_s: 60
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - backward_compatible_signature
+  - only_retry_get_and_head

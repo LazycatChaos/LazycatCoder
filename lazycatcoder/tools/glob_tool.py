@@ -10,7 +10,7 @@ Features:
 import os
 from pathlib import Path
 from typing import List, Optional
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 
 
 class GlobTool(Tool):
@@ -91,12 +91,12 @@ class GlobTool(Tool):
         path: Optional[str] = None,
         head_limit: Optional[int] = None,
         offset: int = 0,
-    ) -> str:
+    ) -> ToolResult:
         """Find files matching the glob pattern."""
         # Validate input
         validation = self.validate_input(pattern)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         # Set search directory
         search_dir = Path(path).expanduser().resolve() if path else Path.cwd()
@@ -123,7 +123,7 @@ class GlobTool(Tool):
                 limit_info = f" (limit: {applied_limit}" + (f", offset: {offset}" if offset > 0 else "") + ")" if was_truncated else ""
             
             if not final_files:
-                return f"No files found matching '{pattern}'{limit_info}"
+                return ToolResult(success=True, content=f"No files found matching '{pattern}'{limit_info}")
             
             # Convert to relative paths for cleaner output
             result_lines = [f"Found {len(final_files)} file{'s' if len(final_files) != 1 else ''}{limit_info}"]
@@ -135,10 +135,10 @@ class GlobTool(Tool):
                     # File is not relative to cwd, use absolute path
                     result_lines.append(str(file_path))
             
-            return "\n".join(result_lines)
+            return ToolResult(success=True, content="\n".join(result_lines))
         
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult(success=False, content=f"Error: {e}", error_code=99)
 
     def get_activity_description(self, kwargs: dict) -> str:
         """Get a short description of what the tool is doing."""

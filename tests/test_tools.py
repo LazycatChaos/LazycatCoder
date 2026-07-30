@@ -48,38 +48,38 @@ def test_tool_lookup_by_name():
 def test_bash_basic():
     bash = get_tool("bash")
     r = bash.execute(command="echo hello")
-    assert "hello" in r
+    assert "hello" in r.content
 
 
 def test_bash_exit_code():
     bash = get_tool("bash")
     r = bash.execute(command="exit 42")
-    assert "exited with code 42" in r
+    assert "exited with code 42" in r.content
 
 
 def test_bash_timeout():
     bash = get_tool("bash")
     r = bash.execute(command="sleep 10", timeout=1)
-    assert "timed out" in r
+    assert "timed out" in r.content
 
 
 def test_bash_blocks_rm_rf():
     bash = get_tool("bash")
     r = bash.execute(command="rm -rf /")
-    assert "Blocked" in r
+    assert "Blocked" in r.content
 
 
 def test_bash_blocks_rm_r_subdir():
     """rm -r on any path (not just root) should be blocked."""
     bash = get_tool("bash")
     r = bash.execute(command="rm -r subdir")
-    assert "Blocked" in r
+    assert "Blocked" in r.content
 
 
 def test_bash_blocks_fork_bomb():
     bash = get_tool("bash")
     r = bash.execute(command=":(){ :|:& };:")
-    assert "Blocked" in r
+    assert "Blocked" in r.content
 
 
 def test_bash_truncates_long_output():
@@ -90,7 +90,7 @@ def test_bash_truncates_long_output():
         f.write("import sys; sys.stdout.write('x' * 20000)\n")
     try:
         r = bash.execute(command=f"python {script}")
-        assert "truncated" in r
+        assert "truncated" in r.content
     finally:
         os.unlink(script)
 
@@ -105,15 +105,15 @@ def test_read_file():
         path = f.name
     # Close the file before reading/unlinking (Windows requires this)
     r = read.execute(file_path=path)
-    assert "line1" in r
-    assert "line2" in r
+    assert "line1" in r.content
+    assert "line2" in r.content
     os.unlink(path)
 
 
 def test_read_file_not_found():
     read = get_tool("read_file")
     r = read.execute(file_path="/tmp/lazycatcoder_nonexistent_file.txt")
-    assert "not found" in r.lower() or "Error" in r
+    assert "not found" in r.content.lower() or not r.success
 
 
 def test_read_file_offset_limit():
@@ -125,7 +125,7 @@ def test_read_file_offset_limit():
     # Close before reading/unlinking (Windows requires this)
     r = read.execute(file_path=path, offset=10, limit=5)
     # offset is 1-based, so line10 should be in result
-    assert "line10" in r or "line9" in r
+    assert "line10" in r.content or "line9" in r.content
     os.unlink(path)
 
 
@@ -135,7 +135,7 @@ def test_write_file():
     write = get_tool("write_file")
     path = tempfile.mktemp(suffix=".txt")
     r = write.execute(file_path=path, content="hello world\n")
-    assert "wrote" in r.lower()
+    assert "wrote" in r.content.lower()
     assert Path(path).read_text() == "hello world\n"
     os.unlink(path)
 
@@ -145,7 +145,7 @@ def test_write_file_creates_dirs():
     path = tempfile.mktemp(suffix=".txt")
     nested = os.path.join(os.path.dirname(path), "sub", "dir", "file.txt")
     r = write.execute(file_path=nested, content="nested\n")
-    assert "wrote" in r.lower()
+    assert "wrote" in r.content.lower()
     assert Path(nested).read_text() == "nested\n"
     import shutil
     shutil.rmtree(os.path.join(os.path.dirname(path), "sub"))
@@ -164,7 +164,7 @@ def test_edit_file_basic():
     from lazycatcoder.tools.edit import record_file_read
     record_file_read(path)
     r = edit.execute(file_path=path, command="replace", old_string="return 42", new_string="return 99")
-    assert "Edited" in r or "Modified" in r or "Replaced" in r
+    assert "Edited" in r.content or "Modified" in r.content or "Replaced" in r.content
     content = Path(path).read_text()
     assert "return 99" in content
     assert "return 42" not in content
@@ -180,7 +180,7 @@ def test_edit_file_not_found_string():
     from lazycatcoder.tools.edit import record_file_read
     record_file_read(path)
     r = edit.execute(file_path=path, command="replace", old_string="NONEXISTENT", new_string="x")
-    assert "not found" in r.lower()
+    assert "not found" in r.content.lower()
     os.unlink(path)
 
 
@@ -193,7 +193,7 @@ def test_edit_file_duplicate_string():
     from lazycatcoder.tools.edit import record_file_read
     record_file_read(path)
     r = edit.execute(file_path=path, command="replace", old_string="dup", new_string="x")
-    assert "2 times" in r or "appears" in r.lower()
+    assert "2 times" in r.content or "appears" in r.content.lower()
     os.unlink(path)
 
 
@@ -207,21 +207,21 @@ def test_delete_file_basic():
     with open(path, "w") as f:
         f.write("delete me")
     r = delete.execute(file_path=path)
-    assert "Deleted" in r
+    assert "Deleted" in r.content
     assert not os.path.exists(path)
 
 
 def test_delete_file_not_found():
     delete = get_tool("delete_file")
     r = delete.execute(file_path="/nonexistent_file_xyz.txt")
-    assert "not found" in r.lower() or "Error" in r
+    assert "not found" in r.content.lower() or not r.success
 
 
 def test_delete_file_rejects_directory():
     """delete_file must refuse to delete directories."""
     delete = get_tool("delete_file")
     r = delete.execute(file_path=tempfile.gettempdir())
-    assert "Cannot delete directory" in r or "Error" in r
+    assert "Cannot delete directory" in r.content or not r.success
 
 
 def test_delete_file_workdir_sandbox():
@@ -232,11 +232,11 @@ def test_delete_file_workdir_sandbox():
 
     # Escape attempt with ..
     r = t.execute(r"..\other_dir\secret.txt")
-    assert "outside the working directory" in r or "Error" in r
+    assert "outside the working directory" in r.content or not r.success
 
     # Absolute path outside workdir
     r = t.execute(r"C:\Windows\win.ini")
-    assert "outside the working directory" in r or "Error" in r
+    assert "outside the working directory" in r.content or not r.success
 
 
 # --- glob ---
@@ -244,13 +244,13 @@ def test_delete_file_workdir_sandbox():
 def test_glob_finds_files():
     glob_t = get_tool("glob")
     r = glob_t.execute(pattern="*.py", path=os.path.dirname(__file__))
-    assert "test_tools.py" in r or "test_core.py" in r
+    assert "test_tools.py" in r.content or "test_core.py" in r.content
 
 
 def test_glob_no_match():
     glob_t = get_tool("glob")
     r = glob_t.execute(pattern="*.nonexistent_extension_xyz")
-    assert "No files" in r
+    assert "No files" in r.content
 
 
 # --- grep ---
@@ -259,20 +259,20 @@ def test_grep_finds_pattern():
     grep = get_tool("grep")
     # Use content mode to get actual matching lines
     r = grep.execute(pattern="def test_grep", path=os.path.dirname(__file__), output_mode="content")
-    assert "test_grep" in r
+    assert "test_grep" in r.content
 
 
 def test_grep_invalid_regex():
     grep = get_tool("grep")
     r = grep.execute(pattern="[invalid")
-    # ripgrep returns "No files found" or an error for invalid regex
-    assert "No files found" in r or "Error" in r or "Invalid" in r
+    # ripgrep may return "No matches found", "No files found", or an error for invalid regex
+    assert "No matches found" in r.content or "No files found" in r.content or not r.success or "Invalid" in r.content
 
 
 def test_grep_nonexistent_path():
     grep = get_tool("grep")
     r = grep.execute(pattern="test", path="/nonexistent_dir_abc")
-    assert "not found" in r.lower() or "Error" in r
+    assert "not found" in r.content.lower() or not r.success
 
 
 # --- agent tool ---

@@ -1,0 +1,19 @@
+id: case_014_rbac_field_masking
+title: Implement role-based field masking for user serialization
+difficulty: L3
+category: feature_add
+
+tags:
+  - rbac
+  - field_masking
+  - serialization
+  - security
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - do_not_mutate_input

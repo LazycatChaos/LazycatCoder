@@ -66,8 +66,8 @@ class SessionMetadata:
         self.token_estimate = data.get("token_estimate", 0) if data else 0
         self.summary = data.get("summary", "") if data else ""
         self.files_touched = data.get("files_touched", []) if data else []
-        self.errors_seen = data.get("errors_seen", []) if data else []
         self.user_message_preview = data.get("user_message_preview", "") if data else ""
+        self.system_errors = data.get("system_errors", []) if data else []
     
     def to_dict(self) -> dict:
         return {
@@ -79,8 +79,8 @@ class SessionMetadata:
             "token_estimate": self.token_estimate,
             "summary": self.summary,
             "files_touched": self.files_touched,
-            "errors_seen": self.errors_seen,
             "user_message_preview": self.user_message_preview,
+            "system_errors": self.system_errors,
         }
     
     def quick_preview(self) -> str:
@@ -104,10 +104,19 @@ class SessionMetadata:
         if self.files_touched:
             lines.append(f"📁 Files: {', '.join(self.files_touched[:10])}" + 
                         ("..." if len(self.files_touched) > 10 else ""))
-        if self.errors_seen:
-            lines.append(f"⚠️  Errors: {len(self.errors_seen)}")
         if self.summary:
             lines.append(f"\n📝 Summary:\n{self.summary}")
+        if self.system_errors:
+            error_types = [e.get("error_type", "unknown") for e in self.system_errors]
+            if "api_error" in error_types:
+                lines.append(f"\n🔌 Status: Interrupted by API/Network ({error_types.count('api_error')} times)")
+            if "tool_crash" in error_types:
+                crashed_tools = set(e.get("tool", "?") for e in self.system_errors if e.get("error_type") == "tool_crash")
+                lines.append(f"💥 Status: Tool failures ({', '.join(crashed_tools)})")
+            if "llm_parse_error" in error_types:
+                lines.append(f"🧠 Status: Agent struggled with tool syntax ({error_types.count('llm_parse_error')} times)")
+        else:
+            lines.append("\n✅ Status: Healthy")
         return "\n".join(lines)
 
 
@@ -121,7 +130,6 @@ def _extract_session_info(messages: List[dict]) -> Dict[str, Any]:
     import re
     
     files_touched = set()
-    errors_seen = []
     user_messages = []
     
     for m in messages:
@@ -139,13 +147,6 @@ def _extract_session_info(messages: List[dict]) -> Dict[str, Any]:
             # Filter out common false positives
             if not any(x in path for x in ['http://', 'https://', 'www.', '@', 'def ', 'class ', 'import ']):
                 files_touched.add(path)
-        
-        # Extract errors
-        if role == "tool" or role == "assistant":
-            for line in text.splitlines():
-                line_lower = line.lower()
-                if any(x in line_lower for x in ['error:', 'error ', 'exception', 'failed', 'traceback']):
-                    errors_seen.append(line.strip()[:150])
     
     # Generate summary from user messages
     if user_messages:
@@ -157,7 +158,6 @@ def _extract_session_info(messages: List[dict]) -> Dict[str, Any]:
     
     return {
         "files_touched": sorted(files_touched),
-        "errors_seen": errors_seen[:10],  # cap at 10
         "user_message_preview": user_messages[0] if user_messages else "",
         "summary": summary,
     }
@@ -180,6 +180,7 @@ def save_session(
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
+    system_errors: Optional[list[dict]] = None,
 ) -> str:
     """Save conversation to disk. Returns the session ID.
     
@@ -188,6 +189,7 @@ def save_session(
         model: Model name used
         session_id: Optional session ID (generated if not provided)
         auto_save: If True, this is an auto-save (updates timestamp only)
+        system_errors: Optional structured error log to persist as session metadata
     """
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -220,6 +222,8 @@ def save_session(
         "messages": clean_messages,
         "message_count": len(clean_messages),
         "token_estimate": _estimate_tokens(clean_messages),
+        "system_errors": _clean_surrogates(system_errors) if system_errors is not None
+                          else existing_data.get("system_errors", []),
         **info,
     }
     
@@ -234,6 +238,7 @@ async def save_session_async(
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
+    system_errors: Optional[list[dict]] = None,
 ) -> str:
     """Async wrapper for save_session using thread pool."""
     loop = asyncio.get_event_loop()
@@ -244,6 +249,7 @@ async def save_session_async(
         model,
         session_id,
         auto_save,
+        system_errors,
     )
 
 
@@ -307,7 +313,7 @@ class SessionManager:
         self._last_save_time = time.time()
         self._save_count += 1
     
-    async def flush(self, messages: list[dict], model: str) -> None:
+    async def flush(self, messages: list[dict], model: str, system_errors: Optional[list[dict]] = None) -> None:
         """Force flush any pending saves."""
         if self._pending_save and not self._pending_save.done():
             try:
@@ -317,7 +323,7 @@ class SessionManager:
         
         # Final save
         if self.session_id:
-            await save_session_async(messages, model, self.session_id, auto_save=True)
+            await save_session_async(messages, model, self.session_id, auto_save=True, system_errors=system_errors)
     
     def get_stats(self) -> dict:
         """Get session manager statistics."""

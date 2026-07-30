@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lazycatcoder"
 version = "0.1.0"
-description = "Minimal AI coding agent (~1300 LoC) inspired by Claude Code. Works with any LLM."
+description = "A production-grade autonomous coding agent inspired by Claude Code. Works with any OpenAI-compatible LLM."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

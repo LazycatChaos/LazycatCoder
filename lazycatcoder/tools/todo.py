@@ -3,9 +3,9 @@
 Inspired by Claude Code's TodoWriteTool - helps track progress on complex tasks.
 """
 
-from typing import List, Literal, Optional
-from dataclasses import dataclass, field
-from .base import Tool, ValidationResult
+from typing import List, Literal
+from dataclasses import dataclass
+from .base import Tool, ToolResult
 
 
 @dataclass
@@ -28,18 +28,18 @@ class TodoWriteTool(Tool):
         "NOT for single trivial tasks that can be completed in one step.\n\n"
         "IMPORTANT: When context gets compressed, the todo list in recent messages is the ONLY reliable "
         "record of task progress. Always call this tool after completing a step to keep the latest state "
-        "visible in context. Each call replaces the entire list — include ALL todos with updated statuses."
+        "visible in context. Each call replaces the entire list — include ALL tasks (completed, in_progress, and pending)."
     )
 
     search_hint = "manage the session task checklist"
 
     @property
     def is_read_only(self) -> bool:
-        return False  # modifies todo state
+        return False
 
     @property
     def is_concurrency_safe(self) -> bool:
-        return False  # stateful operations
+        return False
 
     parameters = {
         "type": "object",
@@ -71,70 +71,84 @@ class TodoWriteTool(Tool):
         "required": ["todos"],
     }
 
-    # In-memory storage (would be persisted in real implementation)
-    _todos: List[TodoItem] = field(default_factory=list)
+    def __init__(self):
+        super().__init__()
+        self._todos: List[TodoItem] = []
 
-    def execute(self, todos: List[dict]) -> str:
+    def execute(self, todos: List[dict]) -> ToolResult:
         """Update the todo list and return status."""
         try:
-            # Validate and convert todos
             validated_todos = []
             for todo in todos:
                 if not isinstance(todo, dict):
-                    return f"Error: Invalid todo format: {todo}"
-                
+                    return ToolResult(success=False, content=f"Error: Invalid todo format: {todo}", error_code=1)
+
                 content = todo.get("content", "").strip()
                 active_form = todo.get("active_form", "").strip()
                 status = todo.get("status", "pending")
 
-                if not content:
-                    return "Error: Each todo must have non-empty 'content'"
-                if not active_form:
-                    return "Error: Each todo must have non-empty 'active_form'"
+                if not content or not active_form:
+                    return ToolResult(success=False, content="Error: Both 'content' and 'active_form' must be non-empty strings", error_code=2)
                 if status not in ["pending", "in_progress", "completed"]:
-                    return f"Error: Invalid status '{status}'. Must be: pending, in_progress, or completed"
+                    return ToolResult(success=False, content=f"Error: Invalid status '{status}'.", error_code=4)
 
-                validated_todos.append(TodoItem(
-                    content=content,
-                    active_form=active_form,
-                    status=status
-                ))
+                validated_todos.append(TodoItem(content=content, active_form=active_form, status=status))
 
-            # Validate business rules
+            total_tasks = len(validated_todos)
             in_progress_count = sum(1 for t in validated_todos if t.status == "in_progress")
-            if in_progress_count == 0 and len(validated_todos) > 0:
-                return "Error: At least one task must be in_progress when there are tasks"
-            if in_progress_count > 1:
-                return f"Error: Exactly ONE task must be in_progress, but found {in_progress_count}"
+            completed_count = sum(1 for t in validated_todos if t.status == "completed")
+            pending_count = sum(1 for t in validated_todos if t.status == "pending")
 
-            # Check for completion without verification (heuristic)
-            all_completed = all(t.status == "completed" for t in validated_todos)
-            has_verification = any("verif" in t.content.lower() for t in validated_todos)
-            
-            old_todos = self._todos.copy()
+            # State machine validation: strict but flexible
+            if in_progress_count > 1:
+                return ToolResult(success=False, content=f"Error: Exactly ONE task must be in_progress, but found {in_progress_count}.", error_code=6)
+
+            if total_tasks > 0 and in_progress_count == 0:
+                # Allowed ONLY if purely planning (all pending) or fully done (all completed)
+                if not (completed_count == total_tasks or pending_count == total_tasks):
+                    return ToolResult(
+                        success=False,
+                        content="Error: You have pending tasks but nothing is in_progress. Please mark the task you are currently working on as 'in_progress'.",
+                        error_code=5
+                    )
+
+            # Heuristic: warn if completed without verification step
+            warnings = []
+            all_completed = (total_tasks > 0 and completed_count == total_tasks)
+            verify_keywords = ["verif", "test", "run", "check", "valid"]
+            has_verification = any(
+                any(kw in t.content.lower() for kw in verify_keywords)
+                for t in validated_todos
+            )
+
+            if all_completed and total_tasks >= 3 and not has_verification:
+                warnings.append(
+                    "NOTE: You just completed 3+ tasks without an explicit verification/testing step. "
+                    "Consider adding a task to check your work before concluding."
+                )
+
+            # Commit state
             self._todos = validated_todos
 
-            # Build response
+            # Build response with ASCII UI (safe for all terminals)
             result_lines = ["Todos updated successfully.\n"]
-            
+            if warnings:
+                result_lines.extend(warnings)
+                result_lines.append("")
+
             if validated_todos:
                 result_lines.append("Current task list:")
                 for i, todo in enumerate(validated_todos, 1):
-                    status_icon = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}[todo.status]
-                    result_lines.append(f"  {i}. {status_icon} [{todo.status}] {todo.content}")
-                
-                if all_completed and len(validated_todos) >= 3 and not has_verification:
-                    result_lines.append(
-                        "\n⚠️ NOTE: You just completed 3+ tasks and none was a verification step. "
-                        "Consider adding a verification task before finalizing."
-                    )
+                    status_mark = {"pending": "[ ]", "in_progress": "[-]", "completed": "[x]"}[todo.status]
+                    pointer = "->" if todo.status == "in_progress" else "  "
+                    result_lines.append(f" {pointer} {i}. {status_mark} {todo.content}")
             else:
                 result_lines.append("All tasks completed! Task list cleared.")
 
-            return "\n".join(result_lines)
+            return ToolResult(success=True, content="\n".join(result_lines))
 
         except Exception as e:
-            return f"Error updating todos: {e}"
+            return ToolResult(success=False, content=f"Error updating todos: {e}", error_code=99)
 
     def get_todos(self) -> List[TodoItem]:
         """Get current todo list."""

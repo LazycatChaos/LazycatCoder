@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Optional
-from .base import Tool, ValidationResult
+from .base import Tool, ToolResult, ValidationResult
 from .edit import record_file_read
 
 
@@ -91,12 +91,12 @@ class ReadFileTool(Tool):
         file_path: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
-    ) -> str:
+    ) -> ToolResult:
         """Read file contents with line numbers."""
         # Validate input
         validation = self.validate_input(file_path)
         if not validation.valid:
-            return validation.message
+            return ToolResult(success=False, content=validation.message, error_code=validation.error_code)
 
         p = Path(file_path).expanduser().resolve()
         
@@ -140,12 +140,16 @@ class ReadFileTool(Tool):
             else:
                 result += f"\n\n[End of file - {total_lines} lines total]"
             
-            return result or "(empty file)"
+            return ToolResult(success=True, content=result or "(empty file)")
         
         except UnicodeDecodeError as e:
-            return f"Error: Unable to decode file as UTF-8. The file may be binary or use a different encoding.\nDetails: {e}"
+            return ToolResult(
+                success=False,
+                content=f"Error: Unable to decode file as UTF-8. The file may be binary or use a different encoding.\nDetails: {e}",
+                error_code=10,
+            )
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult(success=False, content=f"Error: {e}", error_code=99)
 
     def get_activity_description(self, kwargs: dict) -> str:
         """Get a short description of what the tool is doing."""

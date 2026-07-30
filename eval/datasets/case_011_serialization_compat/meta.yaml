@@ -1,0 +1,18 @@
+id: case_011_serialization_compat
+title: Fix event deserialization for backward compatibility
+difficulty: L3
+category: bug_fix
+
+tags:
+  - serialization
+  - backward_compatibility
+  - data_migration
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - public_api_unchanged

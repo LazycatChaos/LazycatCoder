@@ -1,0 +1,20 @@
+id: case_020_daily_report_cache
+title: Fix cache expiration bug causing stale daily reports
+difficulty: L5
+category: bug_fix
+
+tags:
+  - cache
+  - type_mismatch
+  - silent_failure
+  - datetime
+  - debugging
+
+max_rounds: 12
+timeout_s: 30
+
+test_visibility: public
+
+constraints:
+  - no_new_dependencies
+  - only_stdlib

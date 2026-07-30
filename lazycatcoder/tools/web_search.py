@@ -12,7 +12,7 @@ Features:
 import os
 import time
 from typing import Optional, List, Dict, Any
-from .base import Tool
+from .base import Tool, ToolResult
 
 
 class WebSearchTool(Tool):
@@ -98,7 +98,7 @@ Returns formatted search results with titles, URLs, content snippets, and releva
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
         **kwargs
-    ) -> str:
+    ) -> ToolResult:
         """
         Execute web search
         
@@ -114,7 +114,7 @@ Returns formatted search results with titles, URLs, content snippets, and releva
         """
         # Validate inputs
         if not query or not query.strip():
-            return "Error: Search query cannot be empty"
+            return ToolResult(success=False, content="Error: Search query cannot be empty", error_code=1)
         
         # Enforce limits
         max_results = min(max(1, max_results), 10)
@@ -155,30 +155,31 @@ Returns formatted search results with titles, URLs, content snippets, and releva
                 results = getattr(response, "results", []) or getattr(response, "organic", [])
             else:
                 # If response is a string or other type, return error with details
-                return (
-                    f"Error: Unexpected response format from Tavily API.\n"
-                    f"Type: {type(response).__name__}\n"
-                    f"Value: {str(response)[:200]}"
+                return ToolResult(
+                    success=False,
+                    content=f"Error: Unexpected response format from Tavily API.\nType: {type(response).__name__}\nValue: {str(response)[:200]}",
+                    error_code=10
                 )
             
             # Format results
-            return self._format_results(results, query, elapsed)
+            return ToolResult(success=True, content=self._format_results(results, query, elapsed))
             
         except Exception as e:
             error_msg = str(e)
             if "API key" in error_msg or "unauthorized" in error_msg.lower():
-                return (
-                    f"Error: Tavily API authentication failed.\n"
-                    f"Please check your TAVILY_API_KEY environment variable.\n"
-                    f"Get a key at: https://tavily.com/"
+                return ToolResult(
+                    success=False,
+                    content=f"Error: Tavily API authentication failed.\nPlease check your TAVILY_API_KEY environment variable.\nGet a key at: https://tavily.com/",
+                    error_code=11
                 )
             elif "rate limit" in error_msg.lower():
-                return (
-                    f"Error: Rate limit exceeded.\n"
-                    f"Please wait a moment before searching again."
+                return ToolResult(
+                    success=False,
+                    content=f"Error: Rate limit exceeded.\nPlease wait a moment before searching again.",
+                    error_code=12
                 )
             else:
-                return f"Error: Web search failed: {error_msg}"
+                return ToolResult(success=False, content=f"Error: Web search failed: {error_msg}", error_code=99)
     
     def _format_results(
         self, 
