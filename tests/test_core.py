@@ -20,9 +20,10 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    # 13 tools: bash, read_file, write_file, edit_file, delete_file,
-    #           glob, grep, agent, todo_write, web_search, fetch_url, project_structure, get_file_symbols
-    assert len(ALL_TOOLS) == 13
+    # 14 tools: bash, read_file, write_file, edit_file, delete_file,
+    #           glob, grep, agent, todo_write, web_search, fetch_url, project_structure, get_file_symbols,
+    #           activate_tool
+    assert len(ALL_TOOLS) == 14
 
 
 # --- Config ---
@@ -136,8 +137,12 @@ def test_session_save_load():
     sid = save_session(msgs, "test-model", "pytest_test_session")
     loaded = load_session("pytest_test_session")
     assert loaded is not None
-    assert loaded[0] == msgs
-    assert loaded[1] == "test-model"
+    # load_session now returns list[AgentMessage], not list[dict]
+    loaded_msgs, model, _meta = loaded
+    assert len(loaded_msgs) == 1
+    assert loaded_msgs[0].role == "user"
+    assert loaded_msgs[0].content == "test message"
+    assert model == "test-model"
     # cleanup
     pathlib.Path.home().joinpath(".lazycatcoder/sessions/pytest_test_session.json").unlink()
 

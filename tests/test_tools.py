@@ -10,9 +10,10 @@ from lazycatcoder.tools import ALL_TOOLS, get_tool
 # --- Registry ---
 
 def test_tool_count():
-    """13 tools: bash, read_file, write_file, edit_file, delete_file,
-    glob, grep, agent, todo_write, web_search, fetch_url, project_structure, get_file_symbols"""
-    assert len(ALL_TOOLS) == 13
+    """14 tools: bash, read_file, write_file, edit_file, delete_file,
+    glob, grep, agent, todo_write, web_search, fetch_url, project_structure, get_file_symbols,
+    activate_tool"""
+    assert len(ALL_TOOLS) == 14
 
 
 def test_all_tools_have_valid_schema():
