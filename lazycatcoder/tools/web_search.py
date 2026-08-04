@@ -19,6 +19,7 @@ class WebSearchTool(Tool):
     """Search the web using Tavily API"""
     
     name = "web_search"
+    tier = "extended"
     description = """Search the web for current information using Tavily API.
 Use this tool when you need to:
 - Find current information not in your knowledge base (post-2024 events)

@@ -24,10 +24,11 @@ import re
 from pathlib import Path
 from typing import Optional, Callable
 from .llm import LLM, StreamTimeoutError
-from .tools import ALL_TOOLS, get_tool
+from .tools import ALL_TOOLS, get_tool, registry
 from .tools.base import Tool, ToolResult
 from .tools.agent import AgentTool
-from .prompt import system_prompt
+from .tools.activate_tool import ActivateTool
+from .prompt import build_system_prompt
 from .context import ContextManager
 from .session import SessionManager, save_session, load_session
 from .message import AgentMessage, MessageRole, messages_to_llm_dicts, messages_to_dicts, dicts_to_messages
@@ -57,7 +58,28 @@ class Agent:
         system_prompt_override: Optional[str] = None,
     ):
         self.llm = llm
-        self.tools = tools if tools is not None else ALL_TOOLS
+        self.registry = registry  # global, stateless — only tool definitions
+
+        if tools is None:
+            self.tools = list(registry.list_tools())
+        else:
+            self.tools = list(tools)
+            # Ensure ActivateTool is always available — without it the LLM
+            # has no way to activate extended tools.
+            if not any(isinstance(t, ActivateTool) for t in self.tools):
+                activate = registry.get("activate_tool")
+                if activate is not None:
+                    self.tools.append(activate)
+
+        # Activation state — per-instance so parent/child agents don't pollute
+        # each other.  Core tools are active by default; extended tools require
+        # explicit activation via activate_tool.
+        self.active_tool_names: set[str] = {
+            t.name for t in self.tools
+            if getattr(t, 'tier', 'core') == 'core'
+        }
+        self._dirty: bool = True  # first turn must build prompt
+
         self.messages: list[AgentMessage] = []
         self.context = ContextManager(max_tokens=max_context_tokens, model=llm.model)
         self.max_rounds = max_rounds
@@ -69,11 +91,12 @@ class Agent:
         # Virtual environment path
         self.venv_path = venv_path
         
-        # System prompt: use override if provided, otherwise generate from tools
+        # System prompt: use override if provided, otherwise generate from active tools
         if system_prompt_override:
             self._system = system_prompt_override
+            self._dirty = False  # override is static, no rebuild needed
         else:
-            self._system = system_prompt(self.tools, self.workdir)
+            self._system = self._build_prompt()
         
         # Session management (Claude Code style real-time persistence)
         self.session_id = session_id
@@ -93,10 +116,12 @@ class Agent:
         self._tool_stats: dict[str, dict] = {}
         self._stats_lock = threading.Lock()
 
-        # wire up sub-agent capability
+        # wire up sub-agent capability and activate_tool callback
         for t in self.tools:
             if isinstance(t, AgentTool):
                 t._parent_agent = self
+            if isinstance(t, ActivateTool):
+                t._owner_agent = self
         
         # Pass workdir to tools that support it (e.g., BashTool)
         for t in self.tools:
@@ -220,8 +245,47 @@ class Agent:
         msgs.extend(self.messages)
         return messages_to_llm_dicts(msgs)
 
+    def _active_tools(self) -> list[Tool]:
+        """Currently active tool instances.  Single truth source for schemas and dispatch."""
+        result = []
+        for name in sorted(self.active_tool_names):
+            tool = self.registry.get(name)
+            if tool is not None:
+                result.append(tool)
+        return result
+
     def _tool_schemas(self) -> list[dict]:
-        return [t.schema() for t in self.tools]
+        return [t.schema() for t in self._active_tools()]
+
+    def _build_prompt(self) -> str:
+        """Build system prompt from active + inactive tools."""
+        active = self._active_tools()
+        all_tools = self.registry.all_tools()
+        inactive = [
+            t for n, t in all_tools.items()
+            if n not in self.active_tool_names
+        ]
+        return build_system_prompt(active, inactive, self.workdir)
+
+    def activate_tools(self, names: list[str]) -> tuple[list[str], list[str]]:
+        """Activate extended tools by name.  Called by ActivateTool via callback.
+
+        Returns (activated_names, skipped_names) where skipped includes
+        already-active and unknown tools.
+        """
+        activated, skipped = [], []
+        for name in names:
+            tool = self.registry.get(name)
+            if tool is None:
+                skipped.append(name)
+            elif name in self.active_tool_names:
+                skipped.append(name)
+            else:
+                self.active_tool_names.add(name)
+                activated.append(name)
+        if activated:
+            self._dirty = True
+        return activated, skipped
 
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
@@ -261,6 +325,11 @@ class Agent:
                     self._cancel_event.clear()
                     self._cleanup_cancelled_messages()
                     return "⚠️ Operation cancelled by user."
+
+                # Rebuild system prompt if active tool set changed (e.g. activate_tool)
+                if self._dirty:
+                    self._system = self._build_prompt()
+                    self._dirty = False
 
                 # Set error watermark at start of each turn for isolation
                 turn_watermark = len(self._error_log)
@@ -524,7 +593,17 @@ class Agent:
 
     def _exec_tool(self, tc) -> str:
         """Execute a single tool call, returning the result string."""
-        tool = get_tool(tc.name)
+        # Intercept calls to inactive tools — return error, not crash
+        if tc.name not in self.active_tool_names:
+            if self.registry.get(tc.name) is not None:
+                return (
+                    f"Error: Tool '{tc.name}' exists but is not active. "
+                    f"Call activate_tool(tool_names=[\"{tc.name}\"]) first. "
+                    f"It will be available next turn."
+                )
+            return f"Error: unknown tool '{tc.name}'"
+
+        tool = self.registry.get(tc.name)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
         
@@ -664,7 +743,7 @@ class Agent:
         write_calls = []
         
         for tc in tool_calls:
-            tool = get_tool(tc.name)
+            tool = self.registry.get(tc.name)
             if tool and tool.is_read_only:
                 read_only_calls.append(tc)
             else:

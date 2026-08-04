@@ -100,6 +100,10 @@ class Tool(ABC):
     max_result_size_chars: int = 100_000
     search_hint: str = ""  # Short hint for tool search UI
 
+    # Tier: "core" tools are active by default; "extended" tools require
+    # explicit activation via activate_tool before the LLM can use them.
+    tier: str = "core"
+
     # Self-declaring prompt fields — injected into system prompt by PromptBuilder
     prompt_snippet: str = ""  # One-line summary, e.g. "read: Read file contents"
     prompt_guidelines: list[str] = []  # Tool-specific usage rules for the LLM

@@ -20,6 +20,7 @@ class TodoWriteTool(Tool):
     """Create and manage a structured task list for coding sessions."""
 
     name = "todo_write"
+    tier = "extended"
     description = (
         "Use this tool to create and manage a structured task list for your current coding session. "
         "This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user. "

@@ -20,6 +20,7 @@ class FetchTool(Tool):
     """Fetch content from URLs"""
     
     name = "fetch_url"
+    tier = "extended"
     description = """Fetch and extract content from a URL.
 Use this tool when you need to:
 - Get full content of a web page from search results

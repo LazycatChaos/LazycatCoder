@@ -13,6 +13,7 @@ from .base import Tool, ToolResult
 
 class AgentTool(Tool):
     name = "agent"
+    tier = "extended"
     description = (
         "Spawn a sub-agent to handle a complex sub-task independently. "
         "The sub-agent has its own context and tool access. Use this for: "
@@ -50,6 +51,9 @@ class AgentTool(Tool):
             tools=[t for t in parent.tools if t.name != "agent"],  # no recursive agents
             max_context_tokens=parent.context.max_tokens,
             max_rounds=20,
+            # Sub-agent starts from core tier only — does NOT inherit parent's
+            # activated extended tools.  Sub-agent's activate_tool only affects
+            # its own active_tool_names, not the parent's.
         )
 
         try:

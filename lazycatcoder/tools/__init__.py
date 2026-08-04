@@ -15,15 +15,22 @@ from .web_search import WebSearchTool
 from .fetch import FetchTool
 from .project_structure import ProjectStructureTool
 from .symbols import GetFileSymbolsTool
+from .activate_tool import ActivateTool
 
 
 class ToolRegistry:
-    """Central registry for all tools."""
-    
+    """Central registry for all tool definitions.
+
+    This registry is stateless — it only stores tool definitions (code),
+    not activation state.  Activation state (which tools are currently
+    active for a given Agent instance) is managed by the Agent itself,
+    so that parent and child agents don't pollute each other's state.
+    """
+
     def __init__(self):
         self._tools: Dict[str, Tool] = {}
         self._register_default_tools()
-    
+
     def _register_default_tools(self):
         """Register all default tools."""
         default_tools = [
@@ -40,26 +47,31 @@ class ToolRegistry:
             FetchTool(),
             ProjectStructureTool(),
             GetFileSymbolsTool(),
+            ActivateTool(),
         ]
         for tool in default_tools:
             self.register(tool)
-    
+
     def register(self, tool: Tool):
         """Register a tool."""
         self._tools[tool.name] = tool
-    
+
     def get(self, name: str) -> Optional[Tool]:
         """Get a tool by name."""
         return self._tools.get(name)
-    
+
     def list_tools(self) -> List[Tool]:
         """List all registered tools."""
         return list(self._tools.values())
-    
+
+    def all_tools(self) -> Dict[str, Tool]:
+        """Return the internal {name: Tool} dict (read-only view)."""
+        return dict(self._tools)
+
     def get_all_schemas(self) -> List[dict]:
         """Get OpenAI schemas for all tools."""
         return [tool.schema() for tool in self._tools.values()]
-    
+
     def search_tools(self, query: str) -> List[Tool]:
         """Search tools by name, description, or hint."""
         query_lower = query.lower()

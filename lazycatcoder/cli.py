@@ -19,6 +19,26 @@ from . import __version__
 console = Console()
 
 
+def _enable_vt100():
+    """Enable VT100 processing on Windows for faster terminal I/O.
+
+    Without this, prompt_toolkit falls back to slow Win32Output (per-char
+    Console API calls), making text deletion very laggy on long inputs.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
 def _parse_args():
     p = argparse.ArgumentParser(
         prog="lazycatcoder",
@@ -138,6 +158,7 @@ def _run_once(agent: Agent, prompt: str):
 
 def _repl(agent: Agent, config: Config):
     """Interactive read-eval-print loop."""
+    _enable_vt100()
     debug_badge = " [yellow bold]DEBUG[/]" if config.debug else ""
     console.print(Panel(
         f"[bold]LazyCatCoder[/bold] v{__version__}{debug_badge}\n"
@@ -181,8 +202,9 @@ def _repl(agent: Agent, config: Config):
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
         if user_input == "/cancel":
-            agent._cancelled = True
+            agent._cancel_event.set()
             console.print("[yellow]Cancelling current operation...[/yellow]")
+            console.print("[dim]Tip: Press Ctrl+C during tool execution to cancel.[/dim]")
             continue
         if user_input == "/debug":
             config.debug = not config.debug
@@ -372,7 +394,7 @@ def _show_help():
         "[bold]Commands:[/bold]\n"
         "  /help          Show this help\n"
         "  /reset         Save & clear conversation history\n"
-        "  /cancel        Cancel current tool execution\n"
+        "  /cancel        Cancel (also press Ctrl+C during execution)\n"
         "  /model <name>  Switch model mid-conversation\n"
         "  /timeout <sec> Set request timeout (default: 120s)\n"
         "  /debug         Toggle debug mode\n"
