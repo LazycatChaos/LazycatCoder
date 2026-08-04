@@ -23,6 +23,11 @@ class GetFileSymbolsTool(Tool):
         "Especially useful for large files or when scanning multiple files."
     )
 
+    prompt_snippet = "Extract class/function signatures from Python files (AST)."
+    prompt_guidelines = [
+        "Use this to peek into modules without reading entire files, especially for large files or when scanning multiple files.",
+    ]
+
     search_hint = "file structure, AST, class methods, function signatures, symbols"
 
     @property

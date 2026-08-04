@@ -19,6 +19,10 @@ class AgentTool(Tool):
         "researching a codebase, implementing a multi-step change in isolation, "
         "or any task that would benefit from a fresh context window."
     )
+
+    prompt_snippet = "Spawn a sub-agent for complex sub-tasks."
+    prompt_guidelines = []
+
     parameters = {
         "type": "object",
         "properties": {

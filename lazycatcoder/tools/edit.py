@@ -35,6 +35,13 @@ class EditFileTool(Tool):
         "then you append remaining content in chunks."
     )
 
+    prompt_snippet = "Search-replace, insert, append, or prepend in files."
+    prompt_guidelines = [
+        "ALWAYS read a file's content before modifying it.",
+        "For 'replace': include enough surrounding context in old_string to guarantee a unique match.",
+        "Use command='append' to add content to the end of a file after write_file creates it.",
+    ]
+
     search_hint = "edit existing files"
 
     @property

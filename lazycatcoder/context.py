@@ -20,6 +20,57 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Compatibility helpers — work with both AgentMessage and plain dict
+# ---------------------------------------------------------------------------
+
+def _msg_role(m) -> str:
+    """Get message role as a string (handles both AgentMessage and dict)."""
+    if hasattr(m, "role"):
+        r = m.role
+        return r.value if hasattr(r, "value") else str(r)
+    return m.get("role", "")
+
+
+def _msg_content(m) -> str:
+    """Get message content as a string."""
+    if hasattr(m, "content"):
+        return m.content or ""
+    return m.get("content", "") or ""
+
+
+def _msg_tool_calls(m) -> list:
+    """Get tool_calls list."""
+    if hasattr(m, "tool_calls"):
+        return m.tool_calls or []
+    return m.get("tool_calls") or []
+
+
+def _set_msg_content(m, value: str):
+    """Set message content (handles both AgentMessage and dict)."""
+    if hasattr(m, "content"):
+        m.content = value
+    else:
+        m["content"] = value
+
+
+def _link_chain(messages: list):
+    """Re-link parent_id chain after compression rebuilds the list.
+
+    After a compression layer clears and rebuilds ``messages``, the new
+    messages have no parent_id links.  This helper walks the list and
+    sets each message's parent_id to the previous message's id.
+
+    The first message gets parent_id=None (it becomes the new root).
+    """
+    prev_id = None
+    for m in messages:
+        if hasattr(m, "parent_id"):
+            m.parent_id = prev_id
+            prev_id = m.id
+        # plain dicts are not linked (old-format sessions)
+
+
+# ---------------------------------------------------------------------------
 # Tokenizer selection — pick the right tokenizer for the current model
 # ---------------------------------------------------------------------------
 
@@ -98,13 +149,15 @@ def _approx_tokens(text: str, model: str | None = None) -> int:
     return _tokenizer.count(text, model)
 
 
-def estimate_tokens(messages: list[dict], model: str | None = None) -> int:
+def estimate_tokens(messages: list, model: str | None = None) -> int:
     total = 0
     for m in messages:
-        if m.get("content"):
-            total += _approx_tokens(m["content"], model)
-        if m.get("tool_calls"):
-            total += _approx_tokens(str(m["tool_calls"]), model)
+        content = _msg_content(m)
+        if content:
+            total += _approx_tokens(content, model)
+        tc = _msg_tool_calls(m)
+        if tc:
+            total += _approx_tokens(str(tc), model)
     return total
 
 
@@ -119,7 +172,7 @@ class ContextManager:
         self._autocompact_at = int(max_tokens * 0.40)  # 40% -> proactive background compact
         self._last_autocompact_tokens = 0  # Track to avoid redundant compaction
 
-    def token_usage(self, messages: list[dict]) -> int:
+    def token_usage(self, messages: list) -> int:
         """Return current estimated token count."""
         return estimate_tokens(messages, self.model)
 
@@ -137,7 +190,7 @@ class ContextManager:
             return False
         return True
 
-    def maybe_compress(self, messages: list[dict], llm: LLM | None = None) -> bool:
+    def maybe_compress(self, messages: list, llm: LLM | None = None) -> bool:
         """Apply compression layers as needed. Returns True if any compression happened."""
         current = estimate_tokens(messages, self.model)
         compressed = False
@@ -161,7 +214,7 @@ class ContextManager:
 
         return compressed
 
-    def autocompact(self, messages: list[dict], llm: LLM | None = None,
+    def autocompact(self, messages: list, llm: LLM | None = None,
                     min_turns: int = 8, keep_recent: int = 15) -> bool:
         """Layer 4: Background periodic compaction.
 
@@ -186,7 +239,7 @@ class ContextManager:
             return False
 
         # skip if already compressed recently (check for summary marker)
-        if any("[Context compressed" in str(m.get("content", "")) for m in messages[:5]):
+        if any("[Context compressed" in _msg_content(m) for m in messages[:5]):
             return False
 
         # summarize the older portion, keep recent conversation intact
@@ -198,46 +251,27 @@ class ContextManager:
 
         summary = self._get_summary(old, llm)
 
-        # Build compact boundary marker (Claude Code style)
-        compact_boundary = {
-            "role": "system",
-            "subtype": "compact_boundary",
-            "content": f"[Auto-compacted context summary]\n{summary}",
-            "compact_metadata": {
-                "compressed_turns": len(old),
-                "preserved_segment": {
-                    "head_uuid": tail[0].get("uuid") if tail else None,
-                    "tail_uuid": tail[-1].get("uuid") if tail else None,
-                } if tail else {},
-            }
-        }
-        
         # Clear and rebuild with summary + boundary + recent messages
+        from .message import AgentMessage, MessageRole
+
         messages.clear()
-        messages.append({
-            "role": "user",
-            "content": f"[Auto-compacted context summary]\n{summary}",
-        })
-        messages.append({
-            "role": "assistant",
-            "content": "Context has been summarized. Ready to continue.",
-        })
+        messages.append(AgentMessage(
+            role=MessageRole.USER,
+            content=f"[Auto-compacted context summary]\n{summary}",
+            llm_visible=False,
+        ))
+        messages.append(AgentMessage(
+            role=MessageRole.ASSISTANT,
+            content="Context has been summarized. Ready to continue.",
+            llm_visible=False,
+        ))
         messages.extend(tail)
-        
-        # Claude Code Lazy GC: immediately release pre-compaction messages
-        # The boundary was just pushed, so it's the last element.
-        # Only post-boundary messages are needed going forward.
-        # This prevents memory leaks in long sessions.
-        mutable_boundary_idx = len(messages) - 1
-        if mutable_boundary_idx > 0:
-            # Note: We already cleared with messages.clear(), 
-            # but this pattern is kept for consistency with Claude Code
-            pass  # GC already happened via clear()
+        _link_chain(messages)
         
         return True
 
     @staticmethod
-    def _snip_tool_outputs(messages: list[dict]) -> bool:
+    def _snip_tool_outputs(messages: list) -> bool:
         """Layer 1: Truncate tool results over 4000 chars to their first/last lines.
 
         Threshold raised from 1500 to 4000 to avoid snipping medium-sized
@@ -245,9 +279,9 @@ class ContextManager:
         """
         changed = False
         for m in messages:
-            if m.get("role") != "tool":
+            if _msg_role(m) != "tool":
                 continue
-            content = m.get("content", "")
+            content = _msg_content(m)
             if len(content) <= 4000:
                 continue
             lines = content.splitlines()
@@ -259,11 +293,11 @@ class ContextManager:
                 + f"\n... ({len(lines)} lines, snipped to save context) ...\n"
                 + "\n".join(lines[-3:])
             )
-            m["content"] = snipped
+            _set_msg_content(m, snipped)
             changed = True
         return changed
 
-    def _summarize_old(self, messages: list[dict], llm: LLM | None,
+    def _summarize_old(self, messages: list, llm: LLM | None,
                        keep_recent: int = 8) -> bool:
         """Layer 2: Summarize old conversation, keep recent messages intact.
         
@@ -279,19 +313,22 @@ class ContextManager:
 
         # Claude Code Lazy GC pattern: clear and rebuild
         # This immediately releases pre-compaction messages for GC
+        from .message import AgentMessage, MessageRole
+
         messages.clear()
-        messages.append({
-            "role": "user",
-            "content": f"[Context compressed - conversation summary]\n{summary}",
-        })
-        messages.append({
-            "role": "assistant",
-            "content": "Got it, I have the context from our earlier conversation.",
-        })
+        messages.append(AgentMessage(
+            role=MessageRole.USER,
+            content=f"[Context compressed - conversation summary]\n{summary}",
+        ))
+        messages.append(AgentMessage(
+            role=MessageRole.ASSISTANT,
+            content="Got it, I have the context from our earlier conversation.",
+        ))
         messages.extend(tail)
+        _link_chain(messages)
         return True
 
-    def _hard_collapse(self, messages: list[dict], llm: LLM | None):
+    def _hard_collapse(self, messages: list, llm: LLM | None):
         """Layer 3: Emergency compression. Keep only last 4 messages + summary.
         
         This is the last resort when context is near the hard limit.
@@ -301,20 +338,24 @@ class ContextManager:
         summary = self._get_summary(messages[:-len(tail)], llm)
 
         # Lazy GC: clear and rebuild with minimal content
-        messages.clear()
-        messages.append({
-            "role": "user",
-            "content": f"[Hard context reset]\n{summary}",
-        })
-        messages.append({
-            "role": "assistant",
-            "content": "Context restored. Continuing from where we left off.",
-        })
-        messages.extend(tail)
+        from .message import AgentMessage, MessageRole
 
-    def _get_summary(self, messages: list[dict], llm: LLM | None) -> str:
+        messages.clear()
+        messages.append(AgentMessage(
+            role=MessageRole.USER,
+            content=f"[Hard context reset]\n{summary}",
+        ))
+        messages.append(AgentMessage(
+            role=MessageRole.ASSISTANT,
+            content="Context restored. Continuing from where we left off.",
+        ))
+        messages.extend(tail)
+        _link_chain(messages)
+
+    def _get_summary(self, messages: list, llm: LLM | None) -> str:
         """Generate summary via LLM or fallback to extraction."""
         flat = self._flatten(messages)
+        file_ops = self._extract_file_operations(messages)
 
         if llm:
             try:
@@ -330,6 +371,9 @@ class ContextManager:
                                 "you MUST include the latest todo list with each item's status "
                                 "(pending/in_progress/completed). This is the only way to preserve "
                                 "task progress across context compression. "
+                                "CRITICAL: Include a 'File operations' section listing which files "
+                                "were read, written, or edited (with the operation type). This "
+                                "prevents re-reading files that were already examined. "
                                 "Drop: verbose command output, code listings, "
                                 "redundant back-and-forth."
                             ),
@@ -337,19 +381,25 @@ class ContextManager:
                         {"role": "user", "content": flat[:15000]},
                     ],
                 )
-                return resp.content
+                summary = resp.content
+                # Ensure file operations are included even if LLM omitted them
+                if file_ops and not any(
+                    op in summary for op in ("read", "write", "edit", "File")
+                ):
+                    summary = f"{summary}\n\nFile operations:\n{file_ops}"
+                return summary
             except Exception:
                 pass
 
-        # fallback: extract key info including todo state
+        # fallback: extract key info including todo state and file ops
         return self._extract_key_info(messages)
 
     @staticmethod
-    def _flatten(messages: list[dict]) -> str:
+    def _flatten(messages: list) -> str:
         parts = []
         for m in messages:
-            role = m.get("role", "?")
-            text = m.get("content", "") or ""
+            role = _msg_role(m)
+            text = _msg_content(m)
             if text:
                 # Tool results need more context for quality summaries
                 limit = 2000 if role == "tool" else 400
@@ -357,7 +407,58 @@ class ContextManager:
         return "\n".join(parts)
 
     @staticmethod
-    def _extract_key_info(messages: list[dict]) -> str:
+    def _extract_file_operations(messages: list) -> str:
+        """Extract structured file operation history from messages.
+
+        Scans assistant tool_calls for read_file, write_file, edit_file,
+        delete_file, and glob calls, producing a concise summary like:
+            read:  src/main.py, tests/test_core.py
+            edit:  src/main.py
+            write: docs/new.md
+            delete: tmp/old.py
+
+        This lets the LLM know which files it has already examined,
+        avoiding redundant re-reads after context compression.
+        """
+        import json
+
+        FILE_TOOLS = {"read_file", "write_file", "edit_file", "delete_file"}
+        ops: dict[str, list[str]] = {}
+
+        for m in messages:
+            if _msg_role(m) != "assistant":
+                continue
+            tool_calls = _msg_tool_calls(m)
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                name = fn.get("name", "")
+                if name not in FILE_TOOLS:
+                    continue
+                args_raw = fn.get("arguments", "{}")
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                path = args.get("file_path") or ""
+                if not path:
+                    continue
+                op = name.replace("_file", "")  # read_file -> read
+                ops.setdefault(op, [])
+                if path not in ops[op]:
+                    ops[op].append(path)
+
+        if not ops:
+            return ""
+
+        lines = []
+        for op in ("read", "write", "edit", "delete"):
+            paths = ops.get(op)
+            if paths:
+                lines.append(f"  {op}: {', '.join(paths)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_key_info(messages: list) -> str:
         """Fallback: extract file paths, errors, decisions, and todo state without LLM."""
         import re
         files_seen = set()
@@ -366,7 +467,7 @@ class ContextManager:
         todo_state = []
 
         for m in messages:
-            text = m.get("content", "") or ""
+            text = _msg_content(m)
             # extract file paths
             for match in re.finditer(r'[\w./\-]+\.\w{1,5}', text):
                 files_seen.add(match.group())
@@ -375,7 +476,7 @@ class ContextManager:
                 if 'error' in line.lower() or 'Error' in line:
                     errors.append(line.strip()[:150])
             # extract todo state from todo_write tool results
-            if m.get("role") == "tool" and "Todos updated" in text:
+            if _msg_role(m) == "tool" and "Todos updated" in text:
                 for line in text.splitlines():
                     line = line.strip()
                     if line.startswith(("⏳", "🔄", "✅")) or ("[pending]" in line or "[in_progress]" in line or "[completed]" in line):
@@ -384,7 +485,11 @@ class ContextManager:
         parts = []
         if todo_state:
             parts.append("Current task list:\n" + "\n".join(todo_state))
-        if files_seen:
+        # Use structured file operations instead of broad regex
+        file_ops = ContextManager._extract_file_operations(messages)
+        if file_ops:
+            parts.append(f"File operations:\n{file_ops}")
+        elif files_seen:
             parts.append(f"Files touched: {', '.join(sorted(files_seen)[:20])}")
         if errors:
             parts.append(f"Errors seen: {'; '.join(errors[:5])}")

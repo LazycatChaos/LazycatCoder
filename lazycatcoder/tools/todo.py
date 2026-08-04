@@ -31,6 +31,13 @@ class TodoWriteTool(Tool):
         "visible in context. Each call replaces the entire list — include ALL tasks (completed, in_progress, and pending)."
     )
 
+    prompt_snippet = "Create and manage a structured task list."
+    prompt_guidelines = [
+        "Use proactively for complex multi-step tasks (3+ steps). NOT for single trivial tasks.",
+        "When context gets compressed, the todo list in recent messages is the ONLY reliable record of task progress. Always call this tool after completing a step.",
+        "Each call replaces the entire list — include ALL tasks (completed, in_progress, and pending).",
+    ]
+
     search_hint = "manage the session task checklist"
 
     @property

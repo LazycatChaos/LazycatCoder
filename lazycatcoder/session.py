@@ -176,7 +176,7 @@ def _estimate_tokens(messages: List[dict]) -> int:
 
 
 def save_session(
-    messages: list[dict], 
+    messages: list, 
     model: str, 
     session_id: Optional[str] = None,
     auto_save: bool = False,
@@ -185,7 +185,7 @@ def save_session(
     """Save conversation to disk. Returns the session ID.
     
     Args:
-        messages: Conversation messages
+        messages: Conversation messages (AgentMessage objects or plain dicts)
         model: Model name used
         session_id: Optional session ID (generated if not provided)
         auto_save: If True, this is an auto-save (updates timestamp only)
@@ -197,6 +197,11 @@ def save_session(
         session_id = f"session_{int(time.time())}"
     
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Normalize messages to plain dicts (handles AgentMessage objects)
+    from .message import AgentMessage
+    if messages and isinstance(messages[0], AgentMessage):
+        messages = [m.to_dict() for m in messages]
     
     # Load existing data if auto-saving
     existing_data = {}
@@ -334,8 +339,12 @@ class SessionManager:
         }
 
 
-def load_session(session_id: str) -> tuple[list[dict], str, Optional[SessionMetadata]] | None:
-    """Load a saved session. Returns (messages, model, metadata) or None."""
+def load_session(session_id: str) -> tuple[list, str, Optional[SessionMetadata]] | None:
+    """Load a saved session. Returns (messages, model, metadata) or None.
+    
+    Messages are returned as AgentMessage objects (converted from stored dicts
+    via AgentMessage.from_dict, which handles old-format sessions gracefully).
+    """
     path = SESSIONS_DIR / f"{session_id}.json"
     if not path.exists():
         return None
@@ -344,7 +353,13 @@ def load_session(session_id: str) -> tuple[list[dict], str, Optional[SessionMeta
     if data is None:
         return None
     metadata = SessionMetadata(session_id, data)
-    return data["messages"], data["model"], metadata
+    
+    # Convert stored dicts to AgentMessage objects
+    from .message import dicts_to_messages
+    raw_messages = data.get("messages", [])
+    messages = dicts_to_messages(raw_messages)
+    
+    return messages, data["model"], metadata
 
 
 def list_sessions(limit: int = 20) -> list[SessionMetadata]:
@@ -453,8 +468,12 @@ def export_session(session_id: str, output_path: str) -> bool:
     ])
     
     for msg in messages:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
+        # Handle both AgentMessage objects and plain dicts
+        if hasattr(msg, 'role'):
+            role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+        else:
+            role = msg.get("role", "unknown")
+        content = msg.content if hasattr(msg, 'content') else msg.get("content", "")
         lines.append(f"### {role.title()}")
         lines.append(f"")
         lines.append(f"```")

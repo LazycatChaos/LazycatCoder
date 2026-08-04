@@ -1,7 +1,7 @@
 """Tool registry with enhanced features."""
 
 from typing import List, Optional, Dict
-from .base import Tool, ToolResult
+from .base import Tool, ToolResult, HookAbortError
 from .bash import BashTool
 from .read import ReadFileTool
 from .write import WriteFileTool

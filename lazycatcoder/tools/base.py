@@ -7,6 +7,13 @@ from functools import wraps
 from typing import Any, Literal, Optional
 
 
+class HookAbortError(Exception):
+    """Raised by a before_execute hook to abort tool execution.
+
+    The message becomes the tool result content shown to the LLM.
+    """
+
+
 @dataclass
 class ToolResult:
     """Structured result from tool execution.
@@ -92,6 +99,14 @@ class Tool(ABC):
     is_concurrency_safe: bool = True
     max_result_size_chars: int = 100_000
     search_hint: str = ""  # Short hint for tool search UI
+
+    # Self-declaring prompt fields — injected into system prompt by PromptBuilder
+    prompt_snippet: str = ""  # One-line summary, e.g. "read: Read file contents"
+    prompt_guidelines: list[str] = []  # Tool-specific usage rules for the LLM
+
+    # Execution timeout in seconds.  0 means no timeout (use with caution).
+    # Subclasses can override; e.g. bash_tool already has its own timeout param.
+    timeout: int = 120
 
     def validate_input(self, **kwargs) -> ValidationResult:
         """

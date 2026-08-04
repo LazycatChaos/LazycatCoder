@@ -16,6 +16,11 @@ class ReadFileTool(Tool):
         "Use offset and limit parameters to read specific portions of large files."
     )
 
+    prompt_snippet = "Read file contents with line numbers."
+    prompt_guidelines = [
+        "Always read a file before editing it. Use offset and limit for large files.",
+    ]
+
     search_hint = "read file contents"
 
     @property

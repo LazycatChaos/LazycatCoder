@@ -28,7 +28,10 @@ Use this tool when you need to:
 - Look up documentation or technical information
 
 Returns formatted search results with titles, URLs, content snippets, and relevance scores."""
-    
+
+    prompt_snippet = "Search the web for current information."
+    prompt_guidelines = []
+
     parameters = {
         "type": "object",
         "properties": {

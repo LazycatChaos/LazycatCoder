@@ -25,6 +25,10 @@ class GrepTool(Tool):
         "Supports multiple output modes: 'content', 'files_with_matches', 'count'. "
         "Automatically excludes VCS directories. "
     )
+
+    prompt_snippet = "Search file contents with regex (ripgrep)."
+    prompt_guidelines = []
+
     search_hint = "search file contents with regex"
 
     @property
@@ -131,12 +135,33 @@ class GrepTool(Tool):
                 g = g.strip()
                 if g: args.extend(["--glob", g])
 
-        search_path = str(Path(path).expanduser().resolve()) if path else os.getcwd()
+        # Normalize path: resolve to absolute, handle both file and directory.
+        # On Windows, backslash paths are fine for subprocess (shell=False),
+        # but we must separate the *search root* (passed to rg as a positional
+        # arg) from the *working directory* (cwd, must be a valid directory).
+        if path:
+            resolved = Path(path).expanduser().resolve()
+            if resolved.is_file():
+                # Searching a single file: cwd = parent dir, rg gets the file path
+                cwd_dir = str(resolved.parent)
+                search_target = str(resolved)
+            else:
+                # Searching a directory: cwd = that dir, rg gets "."
+                cwd_dir = str(resolved)
+                search_target = "."
+        else:
+            cwd_dir = os.getcwd()
+            search_target = "."
+
+        # Append the search target as the last positional argument to rg.
+        # This is critical: without it, rg searches cwd which may be a file
+        # path on Windows, causing WinError 267.
+        args.append(search_target)
+
         try:
-            # shell=False 提高安全性，直接调用原生 exe
             result = subprocess.run(
                 args,
-                cwd=search_path,
+                cwd=cwd_dir,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

@@ -13,6 +13,10 @@ class DeleteFileTool(Tool):
         "This operation cannot be undone. The file must exist and be a regular file (not a directory). "
         "Deletion is restricted to the working directory for safety."
     )
+
+    prompt_snippet = "Delete files (cannot undo, sandboxed to workdir)."
+    prompt_guidelines = []
+
     search_hint = "delete remove file"
 
     # Working directory — set by Agent at startup

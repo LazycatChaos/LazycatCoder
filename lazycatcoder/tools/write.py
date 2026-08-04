@@ -11,6 +11,13 @@ class WriteFileTool(Tool):
 
     name = "write_file"
 
+    prompt_snippet = "Create or overwrite files. Supports chunked writing."
+    prompt_guidelines = [
+        "For small edits to existing files, prefer edit_file instead.",
+        "You MUST provide BOTH 'file_path' and 'content' parameters.",
+        "For large files (>200 lines or >10KB), use chunk_index and total_chunks to write in parts.",
+    ]
+
     # Max single chunk size: 8KB to avoid JSON truncation in tool arguments
     MAX_CHUNK_BYTES = 20 * 1024
 

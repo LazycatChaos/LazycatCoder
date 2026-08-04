@@ -28,7 +28,10 @@ Use this tool when you need to:
 - Download text files
 
 The tool automatically extracts main content and removes navigation/ads."""
-    
+
+    prompt_snippet = "Fetch and extract content from a URL."
+    prompt_guidelines = []
+
     parameters = {
         "type": "object",
         "properties": {

@@ -54,7 +54,16 @@ class BashTool(Tool):
         "On Linux/macOS, bash is used: use '&&' to chain commands."
     )
 
+    prompt_snippet = "Execute shell commands (tests, git, installs)."
+    prompt_guidelines = [
+        "On Windows, PowerShell is used: use ';' to chain commands (not '&&'). On Linux/macOS, bash is used: use '&&' to chain commands.",
+    ]
+
     search_hint = "run shell commands"
+
+    # Outer guard is 30s longer than the default inner subprocess timeout (120s)
+    # so the inner timeout fires first (it kills the process gracefully).
+    timeout = 180
 
     workdir: Optional[str] = None
     venv_path: Optional[str] = None

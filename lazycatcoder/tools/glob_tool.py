@@ -23,6 +23,9 @@ class GlobTool(Tool):
         "Use head_limit=0 for unlimited results."
     )
 
+    prompt_snippet = "Find files by glob pattern (e.g. '**/*.py')."
+    prompt_guidelines = []
+
     search_hint = "find files by pattern"
 
     @property

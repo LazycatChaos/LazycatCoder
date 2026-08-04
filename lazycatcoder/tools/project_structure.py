@@ -22,6 +22,11 @@ class ProjectStructureTool(Tool):
         "You can specify a subdirectory and control the max depth."
     )
 
+    prompt_snippet = "Tree view of project directory structure."
+    prompt_guidelines = [
+        "Use this INSTEAD of running multiple 'ls' or 'cd' commands. This should be your very first tool call for project-wide tasks.",
+    ]
+
     search_hint = "explore project layout, directory tree"
 
     @property

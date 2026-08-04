@@ -30,6 +30,7 @@ from .tools.agent import AgentTool
 from .prompt import system_prompt
 from .context import ContextManager
 from .session import SessionManager, save_session, load_session
+from .message import AgentMessage, MessageRole, messages_to_llm_dicts, messages_to_dicts, dicts_to_messages
 
 # Import LLM error types for exception handling
 try:
@@ -57,7 +58,7 @@ class Agent:
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
-        self.messages: list[dict] = []
+        self.messages: list[AgentMessage] = []
         self.context = ContextManager(max_tokens=max_context_tokens, model=llm.model)
         self.max_rounds = max_rounds
         self.debug = debug
@@ -107,19 +108,128 @@ class Agent:
         # Lock to protect messages during background autocompact
         self._messages_lock = threading.Lock()
         self._autocompact_running = False
-        # Cancellation flag (set by Ctrl+C or /cancel)
-        self._cancelled = False
+        # Cancellation token (set by Ctrl+C or /cancel)
+        # threading.Event is thread-safe and can be waited on with a timeout
+        self._cancel_event = threading.Event()
+
+        # Previous SIGINT handler — saved during chat() to restore later
+        self._prev_sigint = None
+
+        # Tool hooks — cross-cutting concerns (logging, permissions, audit, etc.)
+        # Each hook: (name, before_execute, after_execute)
+        self._tool_hooks: list[dict] = []
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True if the current operation has been cancelled by the user."""
+        return self._cancel_event.is_set()
+
+    def cancel(self):
+        """Request cancellation of the current operation."""
+        self._cancel_event.set()
+
+    def _last_msg_id(self) -> str | None:
+        """Return the id of the last message in the chain, or None if empty."""
+        if self.messages:
+            return self.messages[-1].id
+        return None
+
+    def _append(self, msg: AgentMessage) -> AgentMessage:
+        """Append a message, auto-linking parent_id to the previous message.
+
+        This is the single entry point for adding messages to the conversation.
+        It ensures the Session Tree (id → parent_id chain) stays consistent
+        without each call site having to manage parent_id manually.
+        """
+        if msg.parent_id is None and self.messages:
+            msg.parent_id = self.messages[-1].id
+        self.messages.append(msg)
+        return msg
+
+    def _cleanup_cancelled_messages(self):
+        """Remove trailing messages that would violate the OpenAI message sequence.
+
+        After cancellation, the last message might be an assistant message with
+        tool_calls but no corresponding tool results — this causes a 400 error
+        on the next chat() call.  We pop trailing messages until the sequence
+        is valid again (ends with user/assistant-text/tool).
+        """
+        while self.messages:
+            last = self.messages[-1]
+            role = last.role if hasattr(last, 'role') else last.get('role', '')
+            tool_calls = last.tool_calls if hasattr(last, 'tool_calls') else last.get('tool_calls')
+            # If last message is assistant with tool_calls but no tool results
+            # follow it, the sequence is incomplete — remove it.
+            if role == 'assistant' and tool_calls:
+                self.messages.pop()
+            else:
+                break
+
+    def _start_input_listener(self):
+        """Install a SIGINT handler so Ctrl+C during chat() sets the cancel
+        event instead of raising KeyboardInterrupt.
+
+        First Ctrl+C: sets _cancel_event (graceful cancel).
+        Second Ctrl+C: restores default handler and raises KeyboardInterrupt
+        (force-quit safety valve).
+
+        Note: signal.signal() only works in the main thread.  If chat() is
+        called from a worker thread (e.g. Web UI backend), this is a no-op
+        and cancellation must be triggered by the caller via agent.cancel().
+        """
+        import signal
+
+        if threading.current_thread() is not threading.main_thread():
+            return  # Non-main thread: skip signal handling
+
+        def _handler(signum, frame):
+            if self._cancel_event.is_set():
+                # Second Ctrl+C — restore default and force-quit
+                signal.signal(signal.SIGINT, self._prev_sigint or signal.SIG_DFL)
+                raise KeyboardInterrupt
+            self._cancel_event.set()
+
+        self._prev_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, _handler)
+
+    def _stop_input_listener(self):
+        """Restore the previous SIGINT handler.
+
+        Note: _prev_sigint may be prompt_toolkit's handler (saved during
+        pt_prompt).  This is fine — prompt_toolkit re-installs its own
+        handler on each prompt() call, so a stale restore here is harmless.
+        The only risk is if chat() exits abnormally (e.g. os._exit) and
+        finally doesn't run, leaving our handler installed.  That would
+        cause Ctrl+C to set _cancel_event instead of interrupting pt_prompt.
+        Risk is low since finally blocks run on normal exceptions.
+        """
+        import signal
+        if threading.current_thread() is not threading.main_thread():
+            return
+        if self._prev_sigint is not None:
+            signal.signal(signal.SIGINT, self._prev_sigint)
+            self._prev_sigint = None
 
     def _full_messages(self) -> list[dict]:
-        return [{"role": "system", "content": self._system}] + self.messages
+        """Build the full message list for the LLM (system + history).
+
+        Filters out messages where llm_visible=False (e.g. compact boundaries,
+        internal notifications).  Returns plain dicts for the OpenAI API.
+        """
+        msgs = [AgentMessage(role=MessageRole.SYSTEM, content=self._system)]
+        msgs.extend(self.messages)
+        return messages_to_llm_dicts(msgs)
 
     def _tool_schemas(self) -> list[dict]:
         return [t.schema() for t in self.tools]
 
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
-        self.messages.append({"role": "user", "content": user_input})
+        self._append(AgentMessage(role=MessageRole.USER, content=user_input))
         self.context.maybe_compress(self.messages, self.llm)
+
+        # Start background input listener so user can type /cancel mid-chat
+        self._start_input_listener()
         
         # Record user message to session (critical - wait for completion)
         if self.auto_save and self._session_manager:
@@ -141,171 +251,200 @@ class Agent:
         round_count = 0
         consecutive_errors = 0  # 新增：记录连续错误次数
 
-        for _ in range(self.max_rounds):
-            round_count += 1
-            self._round_count += 1
-            
-            # Set error watermark at start of each turn for isolation
-            turn_watermark = len(self._error_log)
-            
-            if self.debug:
-                from rich.console import Console
-                console = Console()
-                console.print(f"\n[dim]--- Round {round_count} ---[/dim]")
+        try:
+            for _ in range(self.max_rounds):
+                round_count += 1
+                self._round_count += 1
 
-            try:
-                resp = self.llm.chat(
-                    messages=self._full_messages(),
-                    tools=self._tool_schemas(),
-                    on_token=on_token,
-                    debug=self.debug,
-                )
-            except APIConnectionError as e:
-                self._log_error("api_error", f"Connection failed: {e}")
+                # Check cancellation before starting this round
+                if self._cancel_event.is_set():
+                    self._cancel_event.clear()
+                    self._cleanup_cancelled_messages()
+                    return "⚠️ Operation cancelled by user."
+
+                # Set error watermark at start of each turn for isolation
+                turn_watermark = len(self._error_log)
+
                 if self.debug:
                     from rich.console import Console
                     console = Console()
-                    console.print(f"\n[bold red]>>> LLM connection failed: {e}[/bold red]")
-                return f"⚠️ Cannot connect to model service. Please check network or API configuration."
-            except (APITimeoutError, StreamTimeoutError) as e:
-                self._log_error("api_error", f"Timeout: {e}")
-                if self.debug:
-                    from rich.console import Console
-                    console = Console()
-                    console.print(f"\n[bold red]>>> LLM response timed out: {e}[/bold red]")
-                return f"⚠️ Model response timed out. Please try again or simplify your request."
-            except RateLimitError as e:
-                self._log_error("api_error", f"Rate limit exceeded: {e}")
-                if self.debug:
-                    from rich.console import Console
-                    console = Console()
-                    console.print(f"\n[bold red]>>> LLM rate limited: {e}[/bold red]")
-                return f"⚠️ API rate limit exceeded. Please wait and try again."
-            except Exception as e:
-                self._log_error("api_error", f"Unexpected: {type(e).__name__}: {e}")
-                if self.debug:
-                    from rich.console import Console
-                    console = Console()
-                    console.print(f"\n[bold red]>>> Unexpected LLM error: {e}[/bold red]")
-                return f"⚠️ Unexpected error: {e}"
-            
-            # Track token usage
-            self._total_tokens_input += resp.prompt_tokens
-            self._total_tokens_output += resp.completion_tokens
+                    console.print(f"\n[dim]--- Round {round_count} ---[/dim]")
 
-            # Log LLM parse errors (malformed tool call JSON from model)
-            for pe in resp.parse_errors:
-                self._log_error("llm_parse_error", f"Tool '{pe['tool']}': {pe['error']}", tool=pe["tool"], arguments={"raw_args": pe.get("raw_args", "")})
-
-            # no tool calls -> LLM is done, return text
-            if not resp.tool_calls:
-                self.messages.append(resp.message)
-                if self.debug:
-                    from rich.console import Console
-                    console = Console()
-                    content_preview = resp.content[:200] + "..." if len(resp.content) > 200 else resp.content
-                    console.print(f"\n[bold green]>>> LLM responded with text[/bold green] [dim]({len(resp.content)} chars)[/dim]")
-                    console.print(f"[dim]{content_preview}[/dim]")
-                
-                # Record assistant response (non-critical, fire-and-forget)
-                if self.auto_save and self._session_manager:
-                    self._fire_and_forget_save()
-                
-                return resp.content
-
-            # tool calls -> execute (parallel when multiple, like Claude Code's
-            # StreamingToolExecutor which runs independent tools concurrently)
-            self.messages.append(resp.message)
-
-            if self.debug:
-                from rich.console import Console
-                console = Console()
-                console.print(f"[bold blue]>>> LLM requested {len(resp.tool_calls)} tool call(s)[/bold blue]")
-                for i, tc in enumerate(resp.tool_calls, 1):
-                    console.print(f"  [cyan]{i}. {tc.name}[/cyan]")
-
-            has_error_in_this_round = False  #记录本轮是否有错误
-
-            if len(resp.tool_calls) == 1:
-                tc = resp.tool_calls[0]
-                if on_tool:
-                    on_tool(tc.name, tc.arguments)
-                result = self._exec_tool(tc)
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
-                # Check if tool returned an error
-                if self._is_tool_error(result):
-                    has_error_in_this_round = True
-            else:
-                # parallel execution for multiple tool calls
-                results = self._exec_tools_parallel(resp.tool_calls, on_tool)
-                for tc, result in zip(resp.tool_calls, results):
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result,
-                    })
-                    # Check if tool returned an error
-                    if self._is_tool_error(result):
-                        has_error_in_this_round = True
-
-            # Auto-save after tool results (non-critical, fire-and-forget)
-            # This prevents losing tool outputs if the process crashes mid-session
-            if self.auto_save and self._session_manager:
-                self._fire_and_forget_save()
-
-            # 新增：防死循环 / 熔断机制核心逻辑
-            if has_error_in_this_round:
-                consecutive_errors += 1
-                if consecutive_errors >= 2:  # 如果连续 2 轮都发生工具调用错误
-                    # Detect user language from recent messages for better compliance
-                    lang = self._detect_language()
-                    if lang == "zh":
-                        warning_msg = (
-                            "系统警告：你多次调用工具失败，似乎陷入了死循环。"
-                            "请立即停止重复调用同一个工具。"
-                            "如果你是想向用户输出代码或文档，请直接用 Markdown 格式输出，不要再调用任何工具。"
-                        )
-                    else:
-                        warning_msg = (
-                            "SYSTEM WARNING: You have repeatedly failed to call tools correctly. "
-                            "You seem to be stuck in a loop calling a tool with missing or wrong arguments. "
-                            "STOP calling the same tool. "
-                            "If you are trying to output documentation or code to the user, just provide it directly in plain text/Markdown right now."
-                        )
-                    # 注入 system 消息避免破坏 assistant→tool→assistant 的合法序列
-                    self.messages.append({"role": "system", "content": warning_msg})
-                    consecutive_errors = 0  # 重置计数，给它一次听话的机会
-
+                try:
+                    resp = self.llm.chat(
+                        messages=self._full_messages(),
+                        tools=self._tool_schemas(),
+                        on_token=on_token,
+                        debug=self.debug,
+                    )
+                except APIConnectionError as e:
+                    self._log_error("api_error", f"Connection failed: {e}")
                     if self.debug:
                         from rich.console import Console
                         console = Console()
-                        console.print(
-                            f"\n[bold red]>>> System injected circuit-breaker warning due to loop.[/bold red]")
-            else:
-                consecutive_errors = 0  # 工具执行成功，重置计数
-            #===================================
+                        console.print(f"\n[bold red]>>> LLM connection failed: {e}[/bold red]")
+                    return f"⚠️ Cannot connect to model service. Please check network or API configuration."
+                except (APITimeoutError, StreamTimeoutError) as e:
+                    self._log_error("api_error", f"Timeout: {e}")
+                    if self.debug:
+                        from rich.console import Console
+                        console = Console()
+                        console.print(f"\n[bold red]>>> LLM response timed out: {e}[/bold red]")
+                    return f"⚠️ Model response timed out. Please try again or simplify your request."
+                except RateLimitError as e:
+                    self._log_error("api_error", f"Rate limit exceeded: {e}")
+                    if self.debug:
+                        from rich.console import Console
+                        console = Console()
+                        console.print(f"\n[bold red]>>> LLM rate limited: {e}[/bold red]")
+                    return f"⚠️ API rate limit exceeded. Please wait and try again."
+                except KeyboardInterrupt:
+                    self._cancel_event.clear()
+                    self._cleanup_cancelled_messages()
+                    return "⚠️ Operation cancelled by user."
+                except Exception as e:
+                    self._log_error("api_error", f"Unexpected: {type(e).__name__}: {e}")
+                    if self.debug:
+                        from rich.console import Console
+                        console = Console()
+                        console.print(f"\n[bold red]>>> Unexpected LLM error: {e}[/bold red]")
+                    return f"⚠️ Unexpected error: {e}"
 
-            # compress if tool outputs are big
-            with self._messages_lock:
-                self.context.maybe_compress(self.messages, self.llm)
+                # Track token usage
+                self._total_tokens_input += resp.prompt_tokens
+                self._total_tokens_output += resp.completion_tokens
 
-            # Layer 4: Autocompact - trigger by token usage, not fixed rounds.
-            # This adapts to any workload: short Q&A won't waste LLM calls,
-            # heavy file operations compress before hitting the wall.
-            if not self._autocompact_running:
-                usage = self.context.token_usage(self.messages)
-                if self.context.should_autocompact(usage):
-                    self._autocompact_running = True
-                    threading.Thread(
-                        target=self._background_autocompact,
-                        daemon=True,
-                    ).start()
+                # Log LLM parse errors (malformed tool call JSON from model)
+                for pe in resp.parse_errors:
+                    self._log_error("llm_parse_error", f"Tool '{pe['tool']}': {pe['error']}", tool=pe["tool"], arguments={"raw_args": pe.get("raw_args", "")})
 
-        return "(reached maximum tool-call rounds)"
+                # no tool calls -> LLM is done, return text
+                if not resp.tool_calls:
+                    self._append(AgentMessage.from_dict(resp.message))
+                    if self.debug:
+                        from rich.console import Console
+                        console = Console()
+                        content_preview = resp.content[:200] + "..." if len(resp.content) > 200 else resp.content
+                        console.print(f"\n[bold green]>>> LLM responded with text[/bold green] [dim]({len(resp.content)} chars)[/dim]")
+                        console.print(f"[dim]{content_preview}[/dim]")
+
+                    # Record assistant response (non-critical, fire-and-forget)
+                    if self.auto_save and self._session_manager:
+                        self._fire_and_forget_save()
+
+                    return resp.content
+
+                # tool calls -> execute (parallel when multiple, like Claude Code's
+                # StreamingToolExecutor which runs independent tools concurrently)
+                self._append(AgentMessage.from_dict(resp.message))
+
+                if self.debug:
+                    from rich.console import Console
+                    console = Console()
+                    console.print(f"[bold blue]>>> LLM requested {len(resp.tool_calls)} tool call(s)[/bold blue]")
+                    for i, tc in enumerate(resp.tool_calls, 1):
+                        console.print(f"  [cyan]{i}. {tc.name}[/cyan]")
+
+                has_error_in_this_round = False  #记录本轮是否有错误
+
+                # Check cancellation before executing tools
+                if self._cancel_event.is_set():
+                    self._cancel_event.clear()
+                    self._cleanup_cancelled_messages()
+                    return "⚠️ Operation cancelled by user."
+
+                try:
+                    if len(resp.tool_calls) == 1:
+                        tc = resp.tool_calls[0]
+                        if on_tool:
+                            on_tool(tc.name, tc.arguments)
+                        result = self._exec_tool(tc)
+                        self._append(AgentMessage(
+                            role=MessageRole.TOOL,
+                            content=result,
+                            tool_call_id=tc.id,
+                            tool_name=tc.name,
+                        ))
+                        # Check if tool returned an error
+                        if self._is_tool_error(result):
+                            has_error_in_this_round = True
+                    else:
+                        # parallel execution for multiple tool calls
+                        results = self._exec_tools_parallel(resp.tool_calls, on_tool)
+                        for tc, result in zip(resp.tool_calls, results):
+                            self._append(AgentMessage(
+                                role=MessageRole.TOOL,
+                                content=result,
+                                tool_call_id=tc.id,
+                                tool_name=tc.name,
+                            ))
+                            # Check if tool returned an error
+                            if self._is_tool_error(result):
+                                has_error_in_this_round = True
+                except KeyboardInterrupt:
+                    self._cancel_event.clear()
+                    self._cleanup_cancelled_messages()
+                    return "⚠️ Operation cancelled by user."
+
+                # Auto-save after tool results (non-critical, fire-and-forget)
+                # This prevents losing tool outputs if the process crashes mid-session
+                if self.auto_save and self._session_manager:
+                    self._fire_and_forget_save()
+
+                # 新增：防死循环 / 熔断机制核心逻辑
+                if has_error_in_this_round:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 2:  # 如果连续 2 轮都发生工具调用错误
+                        # Detect user language from recent messages for better compliance
+                        lang = self._detect_language()
+                        if lang == "zh":
+                            warning_msg = (
+                                "系统警告：你多次调用工具失败，似乎陷入了死循环。"
+                                "请立即停止重复调用同一个工具。"
+                                "如果你是想向用户输出代码或文档，请直接用 Markdown 格式输出，不要再调用任何工具。"
+                            )
+                        else:
+                            warning_msg = (
+                                "SYSTEM WARNING: You have repeatedly failed to call tools correctly. "
+                                "You seem to be stuck in a loop calling a tool with missing or wrong arguments. "
+                                "STOP calling the same tool. "
+                                "If you are trying to output documentation or code to the user, just provide it directly in plain text/Markdown right now."
+                            )
+                        # 注入 system 消息避免破坏 assistant→tool→assistant 的合法序列
+                        self._append(AgentMessage(
+                            role=MessageRole.SYSTEM, content=warning_msg,
+                            llm_visible=False,
+                        ))
+                        consecutive_errors = 0  # 重置计数，给它一次听话的机会
+
+                        if self.debug:
+                            from rich.console import Console
+                            console = Console()
+                            console.print(
+                                f"\n[bold red]>>> System injected circuit-breaker warning due to loop.[/bold red]")
+                else:
+                    consecutive_errors = 0  # 工具执行成功，重置计数
+                #===================================
+
+                # compress if tool outputs are big
+                with self._messages_lock:
+                    self.context.maybe_compress(self.messages, self.llm)
+
+                # Layer 4: Autocompact - trigger by token usage, not fixed rounds.
+                # This adapts to any workload: short Q&A won't waste LLM calls,
+                # heavy file operations compress before hitting the wall.
+                if not self._autocompact_running:
+                    usage = self.context.token_usage(self.messages)
+                    if self.context.should_autocompact(usage):
+                        self._autocompact_running = True
+                        threading.Thread(
+                            target=self._background_autocompact,
+                            daemon=True,
+                        ).start()
+
+            return "(reached maximum tool-call rounds)"
+        finally:
+            self._stop_input_listener()
 
     @staticmethod
     def _is_tool_error(result: str) -> bool:
@@ -318,8 +457,8 @@ class Agent:
         zh_count = 0
         checked = 0
         for m in reversed(self.messages):
-            if m.get("role") == "user" and m.get("content"):
-                content = m["content"]
+            if m.role == MessageRole.USER and m.content:
+                content = m.content
                 zh_count += sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
                 checked += 1
                 if checked >= 6:
@@ -331,6 +470,57 @@ class Agent:
         if not self.session_id:
             self.session_id = save_session(self.messages, self.llm.model)
         return self.session_id
+
+    # ------------------------------------------------------------------
+    # Tool hooks — before/after execute
+    # ------------------------------------------------------------------
+
+    def add_tool_hook(
+        self,
+        name: str,
+        before_execute=None,
+        after_execute=None,
+    ):
+        """Register a tool hook.
+
+        Args:
+            name: Unique hook identifier (for removal/debugging).
+            before_execute: callable(tool, kwargs) -> dict | None | HookAbortError
+                - Return dict to replace kwargs (modify arguments).
+                - Return None to keep original kwargs.
+                - Raise HookAbortError to abort (message becomes tool result).
+            after_execute: callable(tool, kwargs, result) -> str | None
+                - Return str to replace result content.
+                - Return None to keep original result.
+        """
+        self._tool_hooks.append({
+            "name": name,
+            "before": before_execute,
+            "after": after_execute,
+        })
+
+    def _run_before_hooks(self, tool, kwargs: dict) -> dict:
+        """Run all before_execute hooks. Returns (possibly modified) kwargs."""
+        from .tools.base import HookAbortError
+        for hook in self._tool_hooks:
+            fn = hook["before"]
+            if fn is None:
+                continue
+            modified = fn(tool, kwargs)
+            if modified is not None:
+                kwargs = modified
+        return kwargs
+
+    def _run_after_hooks(self, tool, kwargs: dict, result: str) -> str:
+        """Run all after_execute hooks. Returns (possibly modified) result."""
+        for hook in self._tool_hooks:
+            fn = hook["after"]
+            if fn is None:
+                continue
+            modified = fn(tool, kwargs, result)
+            if modified is not None:
+                result = modified
+        return result
 
     def _exec_tool(self, tc) -> str:
         """Execute a single tool call, returning the result string."""
@@ -354,8 +544,37 @@ class Agent:
         is_error = False
         
         try:
-            result = tool.execute(**tc.arguments)
-            
+            # Run before_execute hooks (may modify kwargs or abort)
+            from .tools.base import HookAbortError
+            try:
+                kwargs = self._run_before_hooks(tool, dict(tc.arguments))
+            except HookAbortError as abort:
+                content = str(abort) or f"[{tc.name} aborted by hook]"
+                if self.debug:
+                    from rich.console import Console
+                    from rich.panel import Panel
+                    console = Console()
+                    console.print(Panel(
+                        content,
+                        title=f"[yellow]⊘ {tc.name} (Hook Abort)[/yellow]",
+                        border_style="yellow",
+                    ))
+                is_error = True
+                return content
+
+            # Execute with timeout protection (0 = no timeout)
+            tool_timeout = getattr(tool, 'timeout', 120)
+            if tool_timeout and tool_timeout > 0:
+                with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                    future = pool.submit(tool.execute, **kwargs)
+                    try:
+                        result = future.result(timeout=tool_timeout)
+                    except concurrent.futures.TimeoutError:
+                        is_error = True
+                        return f"Error: Tool '{tc.name}' timed out after {tool_timeout}s"
+            else:
+                result = tool.execute(**kwargs)
+
             # Handle ToolResult objects - extract content for LLM messages
             if isinstance(result, ToolResult):
                 content = result.content
@@ -364,6 +583,9 @@ class Agent:
                 # Legacy string return (backward compatibility)
                 content = str(result)
                 is_error = self._is_tool_error(content)
+
+            # Run after_execute hooks (may modify result content)
+            content = self._run_after_hooks(tool, kwargs, content)
             
             if self.debug:
                 from rich.console import Console
