@@ -153,15 +153,16 @@ lazycatcoder -r <session-id>
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `NANOCODER_MODEL` | Model name | `gpt-4o` |
-| `OPENAI_API_KEY` / `NANOCODER_API_KEY` / `DEEPSEEK_API_KEY` | API key | — |
-| `OPENAI_BASE_URL` / `NANOCODER_BASE_URL` | API base URL | — |
-| `NANOCODER_MAX_TOKENS` | Max tokens per response | `16384` |
-| `NANOCODER_MAX_CONTEXT` | Context window size | `200000` |
-| `NANOCODER_TIMEOUT` | Request timeout (seconds) | `120` |
-| `NANOCODER_TEMPERATURE` | Sampling temperature | `0` |
-| `NANOCODER_VENV` | Virtual environment path | auto-detect |
-| `NANOCODER_DEBUG` | Debug mode | `false` |
+| `LAZYCATCODER_MODEL` | Model name | `gpt-4o` |
+| `OPENAI_API_KEY` / `LAZYCATCODER_API_KEY` / `DEEPSEEK_API_KEY` | API key | — |
+| `OPENAI_BASE_URL` / `LAZYCATCODER_BASE_URL` | API base URL | — |
+| `LAZYCATCODER_MAX_TOKENS` | Max tokens per response | `16384` |
+| `LAZYCATCODER_MAX_CONTEXT` | Context window size | `200000` |
+| `LAZYCATCODER_TIMEOUT` | Request timeout (seconds) | `120` |
+| `LAZYCATCODER_TEMPERATURE` | Sampling temperature | `0` |
+| `LAZYCATCODER_VENV` | Virtual environment path | auto-detect |
+| `LAZYCATCODER_DEBUG` | Debug mode | `false` |
+| `LAZYCATCODER_THINKING` | Enable reasoning/thinking mode | `false` |
 
 ## Use as a Library
 

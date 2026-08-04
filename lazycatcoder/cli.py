@@ -44,7 +44,7 @@ def _parse_args():
         prog="lazycatcoder",
         description="Minimal AI coding agent. Works with any OpenAI-compatible LLM.",
     )
-    p.add_argument("-m", "--model", help="Model name (default: $NANOCODER_MODEL or gpt-4o)")
+    p.add_argument("-m", "--model", help="Model name (default: $LAZYCATCODER_MODEL or gpt-4o)")
     p.add_argument("--base-url", help="API base URL (default: $OPENAI_BASE_URL)")
     p.add_argument("--api-key", help="API key (default: $OPENAI_API_KEY)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
@@ -73,7 +73,7 @@ def main():
     if not config.api_key:
         console.print("[red bold]No API key found.[/]")
         console.print(
-            "Set one of: OPENAI_API_KEY, DEEPSEEK_API_KEY, or NANOCODER_API_KEY\n"
+            "Set one of: OPENAI_API_KEY, DEEPSEEK_API_KEY, or LAZYCATCODER_API_KEY\n"
             "\nExamples:\n"
             "  # OpenAI\n"
             "  export OPENAI_API_KEY=sk-...\n"
@@ -82,7 +82,7 @@ def main():
             "  export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com\n"
             "\n"
             "  # Ollama (local)\n"
-            "  export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 NANOCODER_MODEL=qwen2.5-coder\n"
+            "  export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 LAZYCATCODER_MODEL=qwen2.5-coder\n"
         )
         sys.exit(1)
 

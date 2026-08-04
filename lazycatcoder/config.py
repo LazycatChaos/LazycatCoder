@@ -23,22 +23,22 @@ class Config:
     def from_env(cls) -> "Config":
         # pick up common env vars automatically
         api_key = (
-            os.getenv("NANOCODER_API_KEY")
+            os.getenv("LAZYCATCODER_API_KEY")
             or os.getenv("OPENAI_API_KEY")
             or os.getenv("DEEPSEEK_API_KEY")
             or ""
         )
         return cls(
-            model=os.getenv("NANOCODER_MODEL", "gpt-4o"),
+            model=os.getenv("LAZYCATCODER_MODEL", "gpt-4o"),
             api_key=api_key,
-            base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("NANOCODER_BASE_URL"),
-            max_tokens=int(os.getenv("NANOCODER_MAX_TOKENS", "16384")),
-            timeout=int(os.getenv("NANOCODER_TIMEOUT", "120")),
-            temperature=float(os.getenv("NANOCODER_TEMPERATURE", "0")),
-            max_context_tokens=int(os.getenv("NANOCODER_MAX_CONTEXT", "200000")),
-            debug=os.getenv("NANOCODER_DEBUG", "").lower() in ("1", "true", "yes", "on"),
-            venv_path=os.getenv("NANOCODER_VENV") or None,
-            enable_thinking=os.getenv("NANOCODER_THINKING", "").lower() in ("1", "true", "yes", "on"),
+            base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("LAZYCATCODER_BASE_URL"),
+            max_tokens=int(os.getenv("LAZYCATCODER_MAX_TOKENS", "16384")),
+            timeout=int(os.getenv("LAZYCATCODER_TIMEOUT", "120")),
+            temperature=float(os.getenv("LAZYCATCODER_TEMPERATURE", "0")),
+            max_context_tokens=int(os.getenv("LAZYCATCODER_MAX_CONTEXT", "200000")),
+            debug=os.getenv("LAZYCATCODER_DEBUG", "").lower() in ("1", "true", "yes", "on"),
+            venv_path=os.getenv("LAZYCATCODER_VENV") or None,
+            enable_thinking=os.getenv("LAZYCATCODER_THINKING", "").lower() in ("1", "true", "yes", "on"),
         )
 
     def resolve_venv(self, workdir: Optional[str] = None) -> Optional[str]:

@@ -29,15 +29,15 @@ def test_public_api_exports():
 # --- Config ---
 
 def test_config_from_env():
-    os.environ["NANOCODER_MODEL"] = "test-model"
+    os.environ["LAZYCATCODER_MODEL"] = "test-model"
     c = Config.from_env()
     assert c.model == "test-model"
-    del os.environ["NANOCODER_MODEL"]
+    del os.environ["LAZYCATCODER_MODEL"]
 
 
 def test_config_defaults():
     saved = {}
-    for k in ["NANOCODER_MODEL", "NANOCODER_MAX_TOKENS"]:
+    for k in ["LAZYCATCODER_MODEL", "LAZYCATCODER_MAX_TOKENS"]:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
 

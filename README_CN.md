@@ -153,15 +153,16 @@ lazycatcoder -r <session-id>
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `NANOCODER_MODEL` | 模型名称 | `gpt-4o` |
-| `OPENAI_API_KEY` / `NANOCODER_API_KEY` / `DEEPSEEK_API_KEY` | API 密钥 | — |
-| `OPENAI_BASE_URL` / `NANOCODER_BASE_URL` | API 基础 URL | — |
-| `NANOCODER_MAX_TOKENS` | 单次响应上限 | `16384` |
-| `NANOCODER_MAX_CONTEXT` | 上下文窗口大小 | `200000` |
-| `NANOCODER_TIMEOUT` | 请求超时（秒） | `120` |
-| `NANOCODER_TEMPERATURE` | 采样温度 | `0` |
-| `NANOCODER_VENV` | 虚拟环境路径 | 自动检测 |
-| `NANOCODER_DEBUG` | 调试模式 | `false` |
+| `LAZYCATCODER_MODEL` | 模型名称 | `gpt-4o` |
+| `OPENAI_API_KEY` / `LAZYCATCODER_API_KEY` / `DEEPSEEK_API_KEY` | API 密钥 | — |
+| `OPENAI_BASE_URL` / `LAZYCATCODER_BASE_URL` | API 基础 URL | — |
+| `LAZYCATCODER_MAX_TOKENS` | 单次响应上限 | `16384` |
+| `LAZYCATCODER_MAX_CONTEXT` | 上下文窗口大小 | `200000` |
+| `LAZYCATCODER_TIMEOUT` | 请求超时（秒） | `120` |
+| `LAZYCATCODER_TEMPERATURE` | 采样温度 | `0` |
+| `LAZYCATCODER_VENV` | 虚拟环境路径 | 自动检测 |
+| `LAZYCATCODER_DEBUG` | 调试模式 | `false` |
+| `LAZYCATCODER_THINKING` | 启用深度思考（reasoning） | `false` |
 
 ## 作为库使用
 
