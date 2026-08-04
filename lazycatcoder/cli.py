@@ -93,6 +93,7 @@ def main():
         timeout=config.timeout,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+        enable_thinking=config.enable_thinking,
     )
     
     # Determine working directory: CLI arg > current directory
@@ -144,15 +145,43 @@ def main():
     _repl(agent, config)
 
 
+def make_reasoning_handlers():
+    """Create on_reasoning / on_reasoning_end callbacks with state tracking.
+
+    on_reasoning: prints reasoning text in dim grey with 💭 prefix.
+    on_reasoning_end: closes the reasoning display block (only if started).
+
+    Uses style="dim", highlight=False for performance — avoids per-chunk
+    markup parsing and syntax highlight detection that causes flicker.
+    """
+    state = {"started": False}
+
+    def on_reasoning(text):
+        if not state["started"]:
+            console.print("\n[dim]>> Thinking:[/dim]", end="")
+            state["started"] = True
+        console.print(text, end="", style="dim", highlight=False)
+
+    def on_reasoning_end():
+        if state["started"]:
+            console.print("\n")  # 空行分隔思考与正文
+            state["started"] = False
+
+    return on_reasoning, on_reasoning_end
+
+
 def _run_once(agent: Agent, prompt: str):
     """Non-interactive: run one prompt and exit."""
+    on_reasoning, on_reasoning_end = make_reasoning_handlers()
+
     def on_token(tok):
         print(tok, end="", flush=True)
 
     def on_tool(name, kwargs):
         console.print(f"\n[dim]> {name}({_brief(kwargs)})[/dim]")
 
-    agent.chat(prompt, on_token=on_token, on_tool=on_tool)
+    agent.chat(prompt, on_token=on_token, on_tool=on_tool,
+               on_reasoning=on_reasoning, on_reasoning_end=on_reasoning_end)
     print()
 
 
@@ -165,6 +194,7 @@ def _repl(agent: Agent, config: Config):
         f"Model: [cyan]{config.model}[/cyan]"
         + (f"  Base: [dim]{config.base_url}[/dim]" if config.base_url else "")
         + f"  Timeout: [dim]{config.timeout}s[/dim]"
+        + (f"  Thinking: [dim]on[/dim]" if config.enable_thinking else "")
         + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",
         border_style="blue",
     ))
@@ -211,6 +241,27 @@ def _repl(agent: Agent, config: Config):
             agent.debug = config.debug
             status = "on" if config.debug else "off"
             console.print(f"Debug mode [{status}]")
+            continue
+        if user_input == "/think":
+            config.enable_thinking = not config.enable_thinking
+            agent.llm.enable_thinking = config.enable_thinking
+            status = "on" if config.enable_thinking else "off"
+            console.print(f"Deep thinking [{status}]")
+            continue
+        if user_input == "/clear_thoughts":
+            count = 0
+            for msg in agent.messages:
+                if "reasoning" in msg.metadata:
+                    del msg.metadata["reasoning"]
+                    count += 1
+            console.print(f"Cleared reasoning from {count} messages")
+            if agent.auto_save and agent._session_manager:
+                try:
+                    agent._run_async(agent._session_manager.record_message(
+                        agent.messages, agent.llm.model, is_critical=True
+                    ))
+                except Exception as e:
+                    console.print(f"[yellow]⚠ Save failed: {e}[/yellow]")
             continue
         if user_input.startswith("/workdir"):
             parts = user_input.split(None, 1)
@@ -368,6 +419,7 @@ def _repl(agent: Agent, config: Config):
 
         # call the agent
         streamed: list[str] = []
+        on_reasoning, on_reasoning_end = make_reasoning_handlers()
 
         def on_token(tok):
             streamed.append(tok)
@@ -377,7 +429,8 @@ def _repl(agent: Agent, config: Config):
             console.print(f"\n[dim]> {name}({_brief(kwargs)})[/dim]")
 
         try:
-            response = agent.chat(user_input, on_token=on_token, on_tool=on_tool)
+            response = agent.chat(user_input, on_token=on_token, on_tool=on_tool,
+                                 on_reasoning=on_reasoning, on_reasoning_end=on_reasoning_end)
             if streamed:
                 print()  # newline after streamed tokens
             else:
@@ -398,6 +451,8 @@ def _show_help():
         "  /model <name>  Switch model mid-conversation\n"
         "  /timeout <sec> Set request timeout (default: 120s)\n"
         "  /debug         Toggle debug mode\n"
+        "  /think          Toggle deep thinking (reasoning display)\n"
+        "  /clear_thoughts  Clear stored reasoning from all messages (save space)\n"
         "  /workdir [dir] Show or change working directory\n"
         "  /venv [path]   Show or set virtual environment\n"
         "  /tokens        Show token usage (total)\n"

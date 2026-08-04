@@ -287,7 +287,8 @@ class Agent:
             self._dirty = True
         return activated, skipped
 
-    def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
+    def chat(self, user_input: str, on_token=None, on_tool=None,
+             on_reasoning=None, on_reasoning_end=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
         self._append(AgentMessage(role=MessageRole.USER, content=user_input))
         self.context.maybe_compress(self.messages, self.llm)
@@ -344,6 +345,8 @@ class Agent:
                         messages=self._full_messages(),
                         tools=self._tool_schemas(),
                         on_token=on_token,
+                        on_reasoning=on_reasoning,
+                        on_reasoning_end=on_reasoning_end,
                         debug=self.debug,
                     )
                 except APIConnectionError as e:
@@ -389,7 +392,14 @@ class Agent:
 
                 # no tool calls -> LLM is done, return text
                 if not resp.tool_calls:
-                    self._append(AgentMessage.from_dict(resp.message))
+                    msg = AgentMessage.from_dict(resp.message)
+                    if resp.reasoning:
+                        MAX_REASONING_CHARS = 16000
+                        r = resp.reasoning
+                        if len(r) > MAX_REASONING_CHARS:
+                            r = "... [前文已截断] ...\n" + r[-MAX_REASONING_CHARS:]
+                        msg.metadata["reasoning"] = r
+                    self._append(msg)
                     if self.debug:
                         from rich.console import Console
                         console = Console()
@@ -405,7 +415,14 @@ class Agent:
 
                 # tool calls -> execute (parallel when multiple, like Claude Code's
                 # StreamingToolExecutor which runs independent tools concurrently)
-                self._append(AgentMessage.from_dict(resp.message))
+                msg = AgentMessage.from_dict(resp.message)
+                if resp.reasoning:
+                    MAX_REASONING_CHARS = 16000
+                    r = resp.reasoning
+                    if len(r) > MAX_REASONING_CHARS:
+                        r = "... [前文已截断] ...\n" + r[-MAX_REASONING_CHARS:]
+                    msg.metadata["reasoning"] = r
+                self._append(msg)
 
                 if self.debug:
                     from rich.console import Console

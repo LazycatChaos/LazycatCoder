@@ -170,7 +170,7 @@ def test_agent_debug_mode():
             self.total_prompt_tokens = 0
             self.total_completion_tokens = 0
 
-        def chat(self, messages, tools=None, on_token=None, debug=False):
+        def chat(self, messages, tools=None, on_token=None, on_reasoning=None, on_reasoning_end=None, debug=False):
             return LLMResponse(
                 content="Hello! I'm a mock response.",
                 tool_calls=[]
@@ -200,7 +200,7 @@ def test_agent_reset():
         def __init__(self):
             self.model = "test-model"
 
-        def chat(self, messages, tools=None, on_token=None, debug=False):
+        def chat(self, messages, tools=None, on_token=None, on_reasoning=None, on_reasoning_end=None, debug=False):
             return LLMResponse(content="ok", tool_calls=[])
 
     agent = Agent(llm=MockLLM())

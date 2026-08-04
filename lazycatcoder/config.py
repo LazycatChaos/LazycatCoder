@@ -17,6 +17,7 @@ class Config:
     temperature: float = 0.0
     debug: bool = False
     venv_path: Optional[str] = None  # 虚拟环境路径（可选，设置后 bash 工具会自动激活）
+    enable_thinking: bool = False  # 深度思考（reasoning）开关
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -37,6 +38,7 @@ class Config:
             max_context_tokens=int(os.getenv("NANOCODER_MAX_CONTEXT", "200000")),
             debug=os.getenv("NANOCODER_DEBUG", "").lower() in ("1", "true", "yes", "on"),
             venv_path=os.getenv("NANOCODER_VENV") or None,
+            enable_thinking=os.getenv("NANOCODER_THINKING", "").lower() in ("1", "true", "yes", "on"),
         )
 
     def resolve_venv(self, workdir: Optional[str] = None) -> Optional[str]:

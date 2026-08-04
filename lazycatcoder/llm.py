@@ -38,6 +38,7 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     parse_errors: list[dict] = field(default_factory=list)
+    reasoning: str = ""
 
     @property
     def message(self) -> dict:
@@ -65,6 +66,7 @@ class LLM:
         api_key: str,
         base_url: str | None = None,
         timeout: int = 300,
+        enable_thinking: bool = False,
         **kwargs,
     ):
         self.model = model
@@ -84,6 +86,7 @@ class LLM:
             max_retries=0,  # SDK retries disabled; we control retries below
         )
         self.extra = kwargs  # temperature, max_tokens, etc.
+        self.enable_thinking = enable_thinking
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
@@ -92,6 +95,8 @@ class LLM:
         messages: list[dict],
         tools: list[dict] | None = None,
         on_token=None,
+        on_reasoning=None,
+        on_reasoning_end=None,
         debug: bool = False,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
@@ -99,9 +104,10 @@ class LLM:
             "model": self.model,
             "messages": messages,
             "stream": True,
-            'extra_body': {"enable_thinking": False},
             **self._strip_unsupported_params(self.extra),
         }
+        if self.enable_thinking:
+            params['extra_body'] = {"enable_thinking": True}
         if tools:
             params["tools"] = tools
 
@@ -112,6 +118,7 @@ class LLM:
         raw_stream = self._create_stream_with_retry(params)
 
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
         prompt_tok = 0
         completion_tok = 0
@@ -127,6 +134,13 @@ class LLM:
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
+
+                # 思考内容 — 读取但不进入 content
+                reasoning = getattr(delta, 'reasoning_content', None)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    if on_reasoning:
+                        on_reasoning(reasoning)
 
                 # accumulate text
                 if delta.content:
@@ -151,6 +165,10 @@ class LLM:
             # Ensure underlying HTTP connection is closed on error/timeout
             if hasattr(raw_stream, "close"):
                 raw_stream.close()
+            # 无条件调用 on_reasoning_end — 闭包内部用 state["started"] 做 guard
+            # 即使流式中途异常，也能正确关闭 reasoning 显示
+            if on_reasoning_end:
+                on_reasoning_end()
 
         # parse accumulated tool calls
         parsed: list[ToolCall] = []
@@ -177,6 +195,7 @@ class LLM:
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
             parse_errors=parse_errors,
+            reasoning="".join(reasoning_parts),
         )
 
     def _strip_unsupported_params(self, params: dict) -> dict:
@@ -243,6 +262,15 @@ class LLM:
                 ):
                     print("  [LLM] temperature deprecated for this model, retrying without it...")
                     params.pop("temperature", None)
+                    continue
+                # 400 about enable_thinking — model doesn't support it, strip and retry
+                if (
+                    e.status_code == 400
+                    and attempt == 0
+                    and "enable_thinking" in str(e.message).lower()
+                ):
+                    print("  [LLM] enable_thinking unsupported by this model, retrying without it...")
+                    params.pop("extra_body", None)
                     continue
                 # 5xx = server error, retry; 4xx = client error, don't
                 if e.status_code and e.status_code >= 500 and attempt < max_attempts - 1:
