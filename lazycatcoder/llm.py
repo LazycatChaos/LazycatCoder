@@ -108,6 +108,10 @@ class LLM:
         }
         if self.enable_thinking:
             params['extra_body'] = {"enable_thinking": True}
+        else:
+            # Explicitly disable thinking — many models (DeepSeek-R1, GLM, etc.)
+            # enable thinking by default, so omitting the flag won't turn it off.
+            params['extra_body'] = {"enable_thinking": False}
         if tools:
             params["tools"] = tools
 

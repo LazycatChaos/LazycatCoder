@@ -24,6 +24,12 @@ class AgentTool(Tool):
     prompt_snippet = "Spawn a sub-agent for complex sub-tasks."
     prompt_guidelines = []
 
+    # Sub-agent runs multiple rounds (up to 20), each with LLM calls + tool
+    # execution.  120s (base default) is far too short — 600s (10 min) gives
+    # it room to complete meaningful work.  If it still times out, the task
+    # is likely too large for a single sub-agent.
+    timeout = 600
+
     parameters = {
         "type": "object",
         "properties": {

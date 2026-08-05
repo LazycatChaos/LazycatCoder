@@ -240,13 +240,13 @@ def _repl(agent: Agent, config: Config):
             config.debug = not config.debug
             agent.debug = config.debug
             status = "on" if config.debug else "off"
-            console.print(f"Debug mode [{status}]")
+            console.print(f"Debug mode [bold]{status}[/bold]")
             continue
         if user_input == "/think":
             config.enable_thinking = not config.enable_thinking
             agent.llm.enable_thinking = config.enable_thinking
             status = "on" if config.enable_thinking else "off"
-            console.print(f"Deep thinking [{status}]")
+            console.print(f"Deep thinking [bold]{status}[/bold]")
             continue
         if user_input == "/clear_thoughts":
             count = 0
