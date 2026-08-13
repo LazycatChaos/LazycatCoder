@@ -84,6 +84,10 @@ class Agent:
         self.context = ContextManager(max_tokens=max_context_tokens, model=llm.model)
         self.max_rounds = max_rounds
         self.debug = debug
+
+        # GC: hard cap on retained messages to prevent unbounded memory growth.
+        # When exceeded, oldest llm_visible=False messages are physically removed.
+        self.max_history = 100
         
         # Working directory (default: current directory)
         self.workdir = workdir if workdir is not None else os.getcwd()
@@ -115,6 +119,10 @@ class Agent:
         # Tool call statistics (thread-safe)
         self._tool_stats: dict[str, dict] = {}
         self._stats_lock = threading.Lock()
+
+        # Files touched by tool calls (deterministic tracking, not regex)
+        # Key: absolute path, Value: {path, has_read, has_write, has_delete, last_touched}
+        self._touched_files: dict[str, dict] = {}
 
         # wire up sub-agent capability and activate_tool callback
         for t in self.tools:
@@ -300,7 +308,11 @@ class Agent:
         if self.auto_save and self._session_manager:
             try:
                 self._run_async(self._session_manager.record_message(
-                    self.messages, self.llm.model, is_critical=True
+                    self.messages, self.llm.model, is_critical=True,
+                    files_touched=self._export_touched_files(),
+                    system_errors=self.get_all_errors(),
+                    working_dir=self.workdir,
+                    usage=self.get_usage_stats(),
                 ))
             except Exception as e:
                 if self.debug:
@@ -515,6 +527,7 @@ class Agent:
                 # compress if tool outputs are big
                 with self._messages_lock:
                     self.context.maybe_compress(self.messages, self.llm)
+                    self._gc_messages()
 
                 # Layer 4: Autocompact - trigger by token usage, not fixed rounds.
                 # This adapts to any workload: short Q&A won't waste LLM calls,
@@ -550,12 +563,6 @@ class Agent:
                 if checked >= 6:
                     break
         return "zh" if zh_count > 5 else "en"
-
-    def _ensure_session_id(self):
-        """Ensure session_id is set, generating one if needed."""
-        if not self.session_id:
-            self.session_id = save_session(self.messages, self.llm.model)
-        return self.session_id
 
     # ------------------------------------------------------------------
     # Tool hooks — before/after execute
@@ -608,6 +615,43 @@ class Agent:
                 result = modified
         return result
 
+    # Tool names that touch files, mapped to operation category
+    _FILE_TOUCH_TOOLS = {
+        "read_file": "read",
+        "get_file_symbols": "read",
+        "write_file": "write",
+        "edit_file": "write",
+        "delete_file": "delete",
+    }
+
+    def _record_file_touch(self, tool_name: str, args: dict) -> None:
+        """Record a file operation to _touched_files (deterministic, no regex)."""
+        if tool_name not in self._FILE_TOUCH_TOOLS:
+            return
+        raw_path = args.get("file_path") or args.get("filepath")
+        if not raw_path or not isinstance(raw_path, str):
+            return
+        # Normalize to absolute path using workdir as base (not os.getcwd())
+        abs_path = os.path.normpath(os.path.join(self.workdir, raw_path))
+        op = self._FILE_TOUCH_TOOLS[tool_name]
+        if abs_path not in self._touched_files:
+            self._touched_files[abs_path] = {
+                "path": raw_path,
+                "has_read": False,
+                "has_write": False,
+                "has_delete": False,
+                "last_touched": 0.0,
+            }
+        node = self._touched_files[abs_path]
+        if op == "read":
+            node["has_read"] = True
+        elif op == "write":
+            node["has_write"] = True
+        elif op == "delete":
+            node["has_delete"] = True
+        node["last_touched"] = time.time()
+
+
     def _exec_tool(self, tc) -> str:
         """Execute a single tool call, returning the result string."""
         # Intercept calls to inactive tools — return error, not crash
@@ -623,7 +667,9 @@ class Agent:
         tool = self.registry.get(tc.name)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
-        
+
+        # NOTE: file-touch recording is done AFTER successful execution below
+
         if self.debug:
             from rich.console import Console
             console = Console()
@@ -682,6 +728,10 @@ class Agent:
 
             # Run after_execute hooks (may modify result content)
             content = self._run_after_hooks(tool, kwargs, content)
+            
+            # Record file operations only on successful execution
+            if not is_error:
+                self._record_file_touch(tc.name, tc.arguments)
             
             if self.debug:
                 from rich.console import Console
@@ -809,6 +859,7 @@ class Agent:
             if not acquired:
                 return  # Main loop is busy, discard result
             self.messages[:] = snapshot  # in-place replacement
+            self._gc_messages()
             self.context._last_autocompact_tokens = self.context.token_usage(self.messages)
             self._messages_lock.release()
 
@@ -816,12 +867,41 @@ class Agent:
             if self.auto_save and self._session_manager:
                 try:
                     self._run_async(self._session_manager.record_message(
-                        self.messages, self.llm.model, is_critical=True
+                        self.messages, self.llm.model, is_critical=True,
+                        files_touched=self._export_touched_files(),
+                        system_errors=self.get_all_errors(),
+                        working_dir=self.workdir,
+                        usage=self.get_usage_stats(),
                     ))
                 except Exception:
                     pass  # Don't crash the thread on save failure
         finally:
             self._autocompact_running = False
+    def _gc_messages(self):
+        """Garbage-collect old hidden messages to bound memory usage.
+
+        After compression layers mark old messages ``llm_visible=False``,
+        those messages still occupy memory and inflate the session JSON.
+        This method physically removes the oldest hidden messages when the
+        total count exceeds ``self.max_history``.
+
+        Safety: never removes ``llm_visible=True`` messages that fall within
+        the retention window — only trims messages *outside* the window
+        that are already hidden from the LLM.
+        """
+        if len(self.messages) <= self.max_history:
+            return
+
+        window = self.messages[-self.max_history:]
+        evicted = self.messages[:-self.max_history]
+
+        # Only physically drop messages already hidden from the LLM.
+        # Defensive: keep any llm_visible=True that slipped outside the window.
+        retained = [m for m in evicted if getattr(m, "llm_visible", True)]
+
+        self.messages[:] = retained + window
+
+    def get_turn_errors(self) -> list[dict]:
             # Ensure lock is released if we still hold it
             if self._messages_lock.locked():
                 self._messages_lock.release()
@@ -925,12 +1005,27 @@ class Agent:
             stats.update(self._session_manager.get_stats())
         return stats
 
+    def _export_touched_files(self) -> list[dict]:
+        """Export _touched_files as a sorted list for session serialization.
+        
+        Returns shallow copies so callers (including background save threads)
+        get a consistent snapshot that won't be mutated underneath them.
+        """
+        return sorted(
+            (dict(v) for v in self._touched_files.values()),
+            key=lambda x: x["last_touched"],
+            reverse=True,
+        )
+
+
     def save_session(self) -> str:
         """Manually save the current session."""
+        files = self._export_touched_files()
+        usage = self.get_usage_stats()
         if not self.session_id:
-            self.session_id = save_session(self.messages, self.llm.model, system_errors=self.get_all_errors())
+            self.session_id = save_session(self.messages, self.llm.model, files_touched=files, system_errors=self.get_all_errors(), working_dir=self.workdir, usage=usage)
         else:
-            save_session(self.messages, self.llm.model, self.session_id, system_errors=self.get_all_errors())
+            save_session(self.messages, self.llm.model, self.session_id, files_touched=files, system_errors=self.get_all_errors(), working_dir=self.workdir, usage=usage)
         return self.session_id
 
     def flush_session(self):
@@ -938,7 +1033,9 @@ class Agent:
         if self.auto_save and self._session_manager:
             try:
                 self._run_async(self._session_manager.flush(
-                    self.messages, self.llm.model, system_errors=self.get_all_errors()
+                    self.messages, self.llm.model, files_touched=self._export_touched_files(),
+                    system_errors=self.get_all_errors(), working_dir=self.workdir,
+                    usage=self.get_usage_stats(),
                 ), timeout=10)
             except Exception:
                 pass  # Don't crash on exit if flush fails
@@ -952,6 +1049,25 @@ class Agent:
         if historical_errors:
             self._error_log = list(historical_errors)
             self._error_watermark = len(self._error_log)
+
+    def restore_touched_files(self, files_touched: list[dict]) -> None:
+        """Restore _touched_files from a saved session (used for session resume).
+
+        Rebuilds the internal dict from the exported list format so that
+        subsequent auto-saves don't lose prior file tracking data.
+        """
+        self._touched_files.clear()
+        for f in files_touched:
+            if isinstance(f, dict) and "path" in f:
+                abs_path = os.path.normpath(os.path.join(self.workdir, f["path"]))
+                self._touched_files[abs_path] = {
+                    "path": f["path"],
+                    "has_read": f.get("has_read", False),
+                    "has_write": f.get("has_write", False),
+                    "has_delete": f.get("has_delete", False),
+                    "last_touched": f.get("last_touched", 0.0),
+                }
+
 
     def reset(self):
         """Clear conversation history."""
@@ -968,10 +1084,16 @@ class Agent:
         """
         if not self.auto_save or not self._session_manager:
             return
+        files = self._export_touched_files()
+        errors = self.get_all_errors()
+        workdir = self.workdir
+        usage = self.get_usage_stats()
         def _save_bg():
             try:
                 self._run_async(self._session_manager.record_message(
-                    self.messages, self.llm.model, is_critical=False
+                    self.messages, self.llm.model, is_critical=False,
+                    files_touched=files, system_errors=errors, working_dir=workdir,
+                    usage=usage,
                 ))
             except Exception:
                 pass  # Silent failure for non-critical saves

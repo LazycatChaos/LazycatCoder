@@ -62,12 +62,14 @@ class SessionMetadata:
         self.model = data.get("model", "?") if data else "?"
         self.created_at = data.get("created_at", "") if data else ""
         self.saved_at = data.get("saved_at", "") if data else ""
+        self.working_dir = data.get("working_dir", "") if data else ""
         self.message_count = data.get("message_count", 0) if data else 0
         self.token_estimate = data.get("token_estimate", 0) if data else 0
         self.summary = data.get("summary", "") if data else ""
         self.files_touched = data.get("files_touched", []) if data else []
         self.user_message_preview = data.get("user_message_preview", "") if data else ""
         self.system_errors = data.get("system_errors", []) if data else []
+        self.usage = data.get("usage", {}) if data else {}
     
     def to_dict(self) -> dict:
         return {
@@ -75,12 +77,14 @@ class SessionMetadata:
             "model": self.model,
             "created_at": self.created_at,
             "saved_at": self.saved_at,
+            "working_dir": self.working_dir,
             "message_count": self.message_count,
             "token_estimate": self.token_estimate,
             "summary": self.summary,
             "files_touched": self.files_touched,
             "user_message_preview": self.user_message_preview,
             "system_errors": self.system_errors,
+            "usage": self.usage,
         }
     
     def quick_preview(self) -> str:
@@ -89,7 +93,8 @@ class SessionMetadata:
             return self.summary[:100] + "..." if len(self.summary) > 100 else self.summary
         if self.user_message_preview:
             return f"User: {self.user_message_preview[:80]}..."
-        return f"{self.message_count} messages, {self.files_touched[:3]}"
+        file_names = self._file_names()
+        return f"{self.message_count} messages, {file_names[:3]}"
     
     def detailed_preview(self) -> str:
         """Generate a detailed preview for session inspection."""
@@ -102,8 +107,9 @@ class SessionMetadata:
             f"📊 Tokens: ~{self.token_estimate:,}",
         ]
         if self.files_touched:
-            lines.append(f"📁 Files: {', '.join(self.files_touched[:10])}" + 
-                        ("..." if len(self.files_touched) > 10 else ""))
+            file_strs = self._file_display_list()
+            lines.append(f"📁 Files: {', '.join(file_strs[:10])}" +
+                        ("..." if len(file_strs) > 10 else ""))
         if self.summary:
             lines.append(f"\n📝 Summary:\n{self.summary}")
         if self.system_errors:
@@ -119,35 +125,52 @@ class SessionMetadata:
             lines.append("\n✅ Status: Healthy")
         return "\n".join(lines)
 
+    def _file_names(self) -> list[str]:
+        """Extract file path strings from files_touched (new dict format or legacy str format)."""
+        result = []
+        for f in self.files_touched:
+            if isinstance(f, dict):
+                result.append(f.get("path", "?"))
+            else:
+                result.append(str(f))
+        return result
 
-def _approx_tokens(text: str) -> int:
-    """Rough token count. ~3.5 chars/token for mixed en/zh content."""
-    return len(text) // 3
+    def _file_display_list(self) -> list[str]:
+        """Format files with operation icons for display."""
+        result = []
+        for f in self.files_touched:
+            if isinstance(f, dict):
+                path = f.get("path", "?")
+                flags = []
+                if f.get("has_write"):
+                    flags.append("✍️")
+                if f.get("has_delete"):
+                    flags.append("🗑️")
+                if f.get("has_read") and not f.get("has_write"):
+                    flags.append("👁️")
+                result.append(f"{path}({''.join(flags)})" if flags else path)
+            else:
+                result.append(str(f))
+        return result
+
 
 
 def _extract_session_info(messages: List[dict]) -> Dict[str, Any]:
-    """Extract key information from messages for summary and metadata."""
-    import re
-    
-    files_touched = set()
+    """Extract summary and user message preview from messages.
+
+    files_touched is no longer extracted here — it comes from deterministic
+    tool call tracking in Agent._touched_files.
+    """
     user_messages = []
-    
+
     for m in messages:
         role = m.get("role", "")
         text = m.get("content", "") or ""
-        
+
         # Collect user messages for preview
         if role == "user" and text and len(user_messages) < 5:
             user_messages.append(text.strip()[:200])
-        
-        # Extract file paths from any message
-        # Match patterns like: path/to/file.py, /absolute/path.js, ./relative.ts
-        for match in re.finditer(r'(?:^|[\s\'"])([./]?[\w./\-]+(?:\.(?:py|js|ts|jsx|tsx|go|rs|java|c|cpp|h|hpp|rb|rs|sh|md|json|yaml|yml|xml|html|css|sql|ini|cfg|conf|txt|log)))', text, re.IGNORECASE):
-            path = match.group(1)
-            # Filter out common false positives
-            if not any(x in path for x in ['http://', 'https://', 'www.', '@', 'def ', 'class ', 'import ']):
-                files_touched.add(path)
-    
+
     # Generate summary from user messages
     if user_messages:
         summary = "User asked: " + "; ".join(user_messages[:3])
@@ -155,41 +178,60 @@ def _extract_session_info(messages: List[dict]) -> Dict[str, Any]:
             summary += f" (+{len(user_messages) - 3} more requests)"
     else:
         summary = ""
-    
+
     return {
-        "files_touched": sorted(files_touched),
         "user_message_preview": user_messages[0] if user_messages else "",
         "summary": summary,
     }
 
 
-def _estimate_tokens(messages: List[dict]) -> int:
-    """Estimate total token count for messages."""
+def _estimate_tokens(messages: List[dict], model: str = "default") -> int:
+    """Estimate total token count for messages using the shared tokenizer.
+
+    Reuses ``token_utils.get_token_estimator`` so session persistence estimates
+    use the same model-aware tokenizer as context compression, instead of the
+    old error-prone ``len(text) // 3`` heuristic.
+    """
+    from .token_utils import get_token_estimator
+    estimator = get_token_estimator(model)
     total = 0
     for m in messages:
         content = m.get("content", "") or ""
-        total += _approx_tokens(content)
+        if isinstance(content, str):
+            total += estimator(content)
+        elif isinstance(content, list):  # multimodal parts
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    total += estimator(part.get("text", ""))
         tool_calls = m.get("tool_calls", [])
         if tool_calls:
-            total += _approx_tokens(str(tool_calls))
+            total += estimator(str(tool_calls))
     return total
 
 
 def save_session(
-    messages: list, 
-    model: str, 
+    messages: list,
+    model: str,
     session_id: Optional[str] = None,
     auto_save: bool = False,
+    files_touched: Optional[list[dict]] = None,
     system_errors: Optional[list[dict]] = None,
+    working_dir: Optional[str] = None,
+    usage: Optional[dict] = None,
 ) -> str:
     """Save conversation to disk. Returns the session ID.
-    
+
     Args:
         messages: Conversation messages (AgentMessage objects or plain dicts)
         model: Model name used
         session_id: Optional session ID (generated if not provided)
         auto_save: If True, this is an auto-save (updates timestamp only)
+        files_touched: Deterministic file list from tool call tracking
         system_errors: Optional structured error log to persist as session metadata
+        working_dir: Optional working directory to persist for resume safety check
+        usage: Optional cumulative usage stats dict (e.g. from
+            Agent.get_usage_stats()).  Monotonically increasing — distinct from
+            ``token_estimate`` which reflects current context size.
     """
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     
@@ -212,38 +254,55 @@ def save_session(
             if existing is not None:
                 existing_data = existing
     
-    # Extract session info
+    # Extract session info (summary + user message preview only)
     info = _extract_session_info(messages)
-    
+
+    # Use deterministic files_touched from tool call tracking, falling back
+    # to existing data for auto-save when no new data is provided
+    if files_touched is not None:
+        resolved_files = files_touched
+    else:
+        resolved_files = existing_data.get("files_touched", [])
+
     # Clean surrogates from messages before serialization to prevent
     # 'utf-8' codec can't encode characters errors
     clean_messages = _clean_surrogates(messages)
-    
+
     data = {
         "id": session_id,
         "model": model,
         "created_at": existing_data.get("created_at", now),
         "saved_at": now,
+        "working_dir": working_dir or existing_data.get("working_dir", ""),
         "messages": clean_messages,
         "message_count": len(clean_messages),
-        "token_estimate": _estimate_tokens(clean_messages),
+        "token_estimate": _estimate_tokens(clean_messages, model),
         "system_errors": _clean_surrogates(system_errors) if system_errors is not None
                           else existing_data.get("system_errors", []),
+        "files_touched": resolved_files,
+        "usage": usage if usage is not None else existing_data.get("usage", {}),
         **info,
     }
     
     path = SESSIONS_DIR / f"{session_id}.json"
-    # ensure_ascii=True escapes any remaining non-ASCII safely
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Atomic write: write to temp file then os.replace to avoid truncated
+    # session files if the process is killed mid-write.
+    json_str = json.dumps(data, ensure_ascii=False, indent=2)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json_str, encoding="utf-8")
+    os.replace(tmp_path, path)
     return session_id
 
 
 async def save_session_async(
-    messages: list[dict], 
-    model: str, 
+    messages: list[dict],
+    model: str,
     session_id: Optional[str] = None,
     auto_save: bool = False,
+    files_touched: Optional[list[dict]] = None,
     system_errors: Optional[list[dict]] = None,
+    working_dir: Optional[str] = None,
+    usage: Optional[dict] = None,
 ) -> str:
     """Async wrapper for save_session using thread pool."""
     loop = asyncio.get_event_loop()
@@ -254,7 +313,10 @@ async def save_session_async(
         model,
         session_id,
         auto_save,
+        files_touched,
         system_errors,
+        working_dir,
+        usage,
     )
 
 
@@ -279,56 +341,78 @@ class SessionManager:
         messages: list[dict],
         model: str,
         is_critical: bool = False,
+        files_touched: Optional[list[dict]] = None,
+        system_errors: Optional[list[dict]] = None,
+        working_dir: Optional[str] = None,
+        usage: Optional[dict] = None,
     ) -> None:
         """Record a message to session storage.
-        
+
         Args:
             messages: Full message history
             model: Current model name
             is_critical: If True, wait for write to complete (e.g., user messages)
+            files_touched: Deterministic file list from tool call tracking
+            system_errors: Optional structured error log to persist
+            working_dir: Optional working directory to persist for resume safety
+            usage: Optional cumulative usage stats dict (see ``save_session``).
         """
         now = time.time()
-        
+
         # If within flush interval, batch the write
         if not is_critical and (now - self._last_save_time) < LAZY_FLUSH_INTERVAL:
             # Cancel pending save and schedule new one
             if self._pending_save and not self._pending_save.done():
                 self._pending_save.cancel()
-            
+
             self._pending_save = asyncio.create_task(
-                save_session_async(messages, model, self.session_id, auto_save=True)
+                save_session_async(messages, model, self.session_id, auto_save=True,
+                                   files_touched=files_touched, system_errors=system_errors,
+                                   working_dir=working_dir, usage=usage)
             )
             self._last_save_time = now
             self._save_count += 1
             return
-        
+
         # Critical save or past flush interval - wait for completion
         if self._pending_save and not self._pending_save.done():
             try:
                 await self._pending_save
             except asyncio.CancelledError:
                 pass
-        
+
         # Save now
         if not self.session_id:
-            self.session_id = save_session(messages, model, auto_save=False)
+            self.session_id = save_session(messages, model, auto_save=False,
+                                           files_touched=files_touched,
+                                           system_errors=system_errors,
+                                           working_dir=working_dir, usage=usage)
         else:
-            await save_session_async(messages, model, self.session_id, auto_save=True)
-        
+            await save_session_async(messages, model, self.session_id, auto_save=True,
+                                    files_touched=files_touched, system_errors=system_errors,
+                                    working_dir=working_dir, usage=usage)
+
         self._last_save_time = time.time()
         self._save_count += 1
-    
-    async def flush(self, messages: list[dict], model: str, system_errors: Optional[list[dict]] = None) -> None:
+
+    async def flush(self, messages: list[dict], model: str,
+                    files_touched: Optional[list[dict]] = None,
+                    system_errors: Optional[list[dict]] = None,
+                    working_dir: Optional[str] = None,
+                    usage: Optional[dict] = None) -> None:
         """Force flush any pending saves."""
         if self._pending_save and not self._pending_save.done():
             try:
                 await self._pending_save
             except asyncio.CancelledError:
                 pass
-        
+
         # Final save
         if self.session_id:
-            await save_session_async(messages, model, self.session_id, auto_save=True, system_errors=system_errors)
+            await save_session_async(messages, model, self.session_id,
+                                     auto_save=True, files_touched=files_touched,
+                                     system_errors=system_errors, working_dir=working_dir,
+                                     usage=usage)
     
     def get_stats(self) -> dict:
         """Get session manager statistics."""
@@ -407,10 +491,15 @@ def search_sessions(query: str, limit: int = 10) -> list[SessionMetadata]:
             continue
         
         # Search in summary, files, and user messages
+        raw_files = data.get("files_touched", [])
+        file_paths = " ".join(
+            f.get("path", "") if isinstance(f, dict) else str(f)
+            for f in raw_files
+        )
         searchable = [
             data.get("summary", ""),
             data.get("user_message_preview", ""),
-            " ".join(data.get("files_touched", [])),
+            file_paths,
             data.get("model", ""),
         ]
         
@@ -458,7 +547,7 @@ def export_session(session_id: str, output_path: str) -> bool:
         f"## Files Touched",
     ]
     
-    for f in metadata.files_touched:
+    for f in metadata._file_display_list():
         lines.append(f"- `{f}`")
     
     lines.extend([

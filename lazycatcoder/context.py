@@ -13,6 +13,8 @@ LazyCatCoder implements the same idea in 3 layers:
 """
 
 from __future__ import annotations
+
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -53,6 +55,22 @@ def _set_msg_content(m, value: str):
         m["content"] = value
 
 
+def _set_msg_metadata(m, key: str, value):
+    """Set a metadata field (handles both AgentMessage and dict)."""
+    if hasattr(m, "metadata"):
+        m.metadata[key] = value
+    else:
+        meta = m.setdefault("metadata", {})
+        meta[key] = value
+
+
+def _msg_metadata(m) -> dict:
+    """Get the metadata dict (handles both AgentMessage and dict)."""
+    if hasattr(m, "metadata"):
+        return m.metadata
+    return m.setdefault("metadata", {})
+
+
 def _link_chain(messages: list):
     """Re-link parent_id chain after compression rebuilds the list.
 
@@ -71,82 +89,19 @@ def _link_chain(messages: list):
 
 
 # ---------------------------------------------------------------------------
-# Tokenizer selection — pick the right tokenizer for the current model
+# Token estimation — delegated to the shared token_utils module so that
+# context compression and session persistence share one implementation.
 # ---------------------------------------------------------------------------
 
-class _TokenizerProxy:
-    """Lazy tokenizer wrapper that picks the right backend per model."""
-
-    def __init__(self):
-        self._qwen_tokenizer = None
-        self._tiktoken_enc = None
-        self._last_model: str | None = None
-        self._active: str | None = None  # 'qwen' | 'tiktoken' | 'fallback'
-
-    def _ensure_qwen(self):
-        if self._qwen_tokenizer is None:
-            try:
-                from .tokenize import CustomTokenizer
-                from pathlib import Path
-                vocab_path = Path(__file__).parent / "tokenize" / "tiktoken_file"
-                self._qwen_tokenizer = CustomTokenizer(str(vocab_path))
-            except Exception:
-                pass  # Qwen tokenizer unavailable, will fallback
-
-    def _ensure_tiktoken(self, model: str):
-        """Get the right tiktoken encoding for the model."""
-        if self._tiktoken_enc is None:
-            try:
-                import tiktoken
-                # Map model names to tiktoken encodings
-                if "gpt-4" in model or "gpt-3.5" in model:
-                    enc_name = "cl100k_base"
-                elif "o1" in model or "o3" in model:
-                    enc_name = "o200k_base"
-                else:
-                    enc_name = "cl100k_base"  # default for OpenAI models
-                self._tiktoken_enc = tiktoken.get_encoding(enc_name)
-            except Exception:
-                pass  # tiktoken unavailable
-
-    def count(self, text: str, model: str | None = None) -> int:
-        """Count tokens using the best available tokenizer for the model."""
-        # Detect if model changed
-        if model != self._last_model:
-            self._last_model = model
-            self._active = None  # force re-detection
-
-        if self._active is None:
-            if model and ("qwen" in model.lower() or "qwq" in model.lower()):
-                self._ensure_qwen()
-                if self._qwen_tokenizer is not None:
-                    self._active = "qwen"
-            if self._active is None and model:
-                self._ensure_tiktoken(model)
-                if self._tiktoken_enc is not None:
-                    self._active = "tiktoken"
-            if self._active is None:
-                self._active = "fallback"
-
-        if self._active == "qwen":
-            return len(self._qwen_tokenizer.encode(text))
-        elif self._active == "tiktoken":
-            return len(self._tiktoken_enc.encode(text))
-        else:
-            # Fallback: mixed-language heuristic
-            # - CJK chars ≈ 1 token each
-            # - Latin/ASCII ≈ 3.5 chars/token
-            cjk = sum(1 for c in text if ord(c) > 0x2E80)
-            ascii_len = len(text) - cjk
-            return cjk + ascii_len // 3
+from .token_utils import _approx_tokens
 
 
-_tokenizer = _TokenizerProxy()
-
-
-def _approx_tokens(text: str, model: str | None = None) -> int:
-    """Estimate token count using the best available tokenizer for the model."""
-    return _tokenizer.count(text, model)
+# Soft-delete archive limits.  Old messages evicted from the active list are
+# archived here (in-memory) instead of being destroyed.  Eviction is FIFO by
+# compression batch — a batch is a semantic unit (all messages compressed into
+# one summary), so it must be dropped whole.
+ARCHIVE_MAX_ITEMS = 500        # hard cap on message count (防极端碎消息)
+ARCHIVE_MAX_TOKENS = 256_000   # soft cap on archived tokens (~2x 128k window)
 
 
 def estimate_tokens(messages: list, model: str | None = None) -> int:
@@ -171,6 +126,14 @@ class ContextManager:
         self._collapse_at = int(max_tokens * 0.90)   # 90% -> hard collapse
         self._autocompact_at = int(max_tokens * 0.40)  # 40% -> proactive background compact
         self._last_autocompact_tokens = 0  # Track to avoid redundant compaction
+
+        # Soft-delete side-store.  Messages compressed out of the active list
+        # are archived here (same AgentMessage type as the active list) rather
+        # than destroyed, so history stays recoverable within the process.
+        self._archived: list[AgentMessage] = []
+        self._archive_seq: int = 0
+        self._archived_tokens: int = 0
+        self._archive_batch_tokens: dict[int, int] = {}  # batch_id -> token count
 
     def token_usage(self, messages: list) -> int:
         """Return current estimated token count."""
@@ -251,21 +214,28 @@ class ContextManager:
 
         summary = self._get_summary(old, llm)
 
-        # Clear and rebuild with summary + boundary + recent messages
+        # Soft-delete: archive the old portion, then rebuild active list with
+        # summary + boundary + recent messages.  Old messages are preserved in
+        # the side-store (in-memory) instead of being destroyed.
         from .message import AgentMessage, MessageRole
 
-        messages.clear()
-        messages.append(AgentMessage(
+        batch_id = self._archive_messages(old, reason="layer4_autocompact")
+        summary_msg = AgentMessage(
             role=MessageRole.USER,
             content=f"[Auto-compacted context summary]\n{summary}",
             llm_visible=False,
-        ))
-        messages.append(AgentMessage(
+        )
+        summary_msg.metadata["compressed_batches"] = [batch_id]
+        first_id = old[0].id if hasattr(old[0], "id") else old[0].get("id")
+        last_id = old[-1].id if hasattr(old[-1], "id") else old[-1].get("id")
+        if first_id is not None and last_id is not None:
+            summary_msg.metadata["compressed_range"] = (first_id, last_id)
+        ack_msg = AgentMessage(
             role=MessageRole.ASSISTANT,
             content="Context has been summarized. Ready to continue.",
             llm_visible=False,
-        ))
-        messages.extend(tail)
+        )
+        messages[:] = [summary_msg, ack_msg] + tail
         _link_chain(messages)
         
         return True
@@ -294,6 +264,7 @@ class ContextManager:
                 + "\n".join(lines[-3:])
             )
             _set_msg_content(m, snipped)
+            _set_msg_metadata(m, "snipped", True)
             changed = True
         return changed
 
@@ -311,20 +282,27 @@ class ContextManager:
 
         summary = self._get_summary(old, llm)
 
-        # Claude Code Lazy GC pattern: clear and rebuild
-        # This immediately releases pre-compaction messages for GC
+        # Soft-delete: archive the old portion, then rebuild active list with
+        # summary + ack + recent messages.  Old messages are preserved in the
+        # in-memory side-store instead of being destroyed.
         from .message import AgentMessage, MessageRole
 
-        messages.clear()
-        messages.append(AgentMessage(
+        batch_id = self._archive_messages(old, reason="layer2_compress")
+        summary_msg = AgentMessage(
             role=MessageRole.USER,
             content=f"[Context compressed - conversation summary]\n{summary}",
-        ))
-        messages.append(AgentMessage(
+        )
+        summary_msg.metadata["compressed_batches"] = [batch_id]
+        # Range may be unavailable for plain dicts (no id field); keep it best-effort.
+        first_id = old[0].id if hasattr(old[0], "id") else old[0].get("id")
+        last_id = old[-1].id if hasattr(old[-1], "id") else old[-1].get("id")
+        if first_id is not None and last_id is not None:
+            summary_msg.metadata["compressed_range"] = (first_id, last_id)
+        ack_msg = AgentMessage(
             role=MessageRole.ASSISTANT,
             content="Got it, I have the context from our earlier conversation.",
-        ))
-        messages.extend(tail)
+        )
+        messages[:] = [summary_msg, ack_msg] + tail
         _link_chain(messages)
         return True
 
@@ -351,6 +329,86 @@ class ContextManager:
         ))
         messages.extend(tail)
         _link_chain(messages)
+# ------------------------------------------------------------------
+    # Soft-delete archive (side-store for compressed-out messages)
+    # ------------------------------------------------------------------
+
+    def _archive_messages(self, old: list, reason: str) -> int:
+        """Move ``old`` messages into the in-memory archive, marked non-visible.
+
+        All messages in a single compression get the same ``archive_batch_id``
+        so they can be evicted (and later retrieved) as one semantic unit.
+        ``llm_visible`` is forced to False; metadata is appended, never
+        overwriting any pre-existing fields.
+
+        Returns the new batch id.
+        """
+        if not old:
+            return -1
+
+        self._archive_seq += 1
+        batch_id = self._archive_seq
+        now = time.time()
+        batch_tokens = 0
+
+        for m in old:
+            # Force non-visible (dicts and AgentMessage alike).
+            if hasattr(m, "llm_visible"):
+                m.llm_visible = False
+            else:
+                m["llm_visible"] = False
+            _set_msg_metadata(m, "archived", True)
+            if "archived_reason" not in _msg_metadata(m):
+                _set_msg_metadata(m, "archived_reason", reason)
+            _msg_metadata(m).setdefault("archived_at", now)
+            _set_msg_metadata(m, "archive_batch_id", batch_id)
+            content = _msg_content(m)
+            if content:
+                batch_tokens += _approx_tokens(content, self.model)
+
+        self._archived.extend(old)
+        self._archived_tokens += batch_tokens
+        self._archive_batch_tokens[batch_id] = batch_tokens
+        self._gc_archived()
+        return batch_id
+
+    def _gc_archived(self) -> None:
+        """Evict archived batches FIFO (oldest first) when over the caps.
+
+        Eviction is whole-batch: a batch is a semantic unit (all messages
+        compressed into one summary), so dropping it partially would leave
+        orphaned messages that no summary references.
+        """
+        while self._archived and (
+            len(self._archived) > ARCHIVE_MAX_ITEMS
+            or self._archived_tokens > ARCHIVE_MAX_TOKENS
+        ):
+            oldest_batch = _msg_metadata(self._archived[0]).get("archive_batch_id")
+            if oldest_batch is None:
+                # Defensive: a message without a batch id can't be grouped;
+                # drop it alone.
+                m = self._archived.pop(0)
+                self._archived_tokens -= _approx_tokens(_msg_content(m), self.model)
+                continue
+            freed = self._archive_batch_tokens.pop(oldest_batch, 0)
+            self._archived_tokens -= freed
+            self._archived = [
+                m for m in self._archived
+                if _msg_metadata(m).get("archive_batch_id") != oldest_batch
+            ]
+
+    def get_archived(self, *, batch_id: int | None = None) -> list:
+        """Return archived messages as a read-only copy, optionally by batch.
+
+        Returns a shallow copy of the list so callers cannot mutate the
+        archive through the returned reference.
+        """
+        if batch_id is not None:
+            return [
+                m for m in self._archived
+                if _msg_metadata(m).get("archive_batch_id") == batch_id
+            ]
+        return list(self._archived)
 
     def _get_summary(self, messages: list, llm: LLM | None) -> str:
         """Generate summary via LLM or fallback to extraction."""

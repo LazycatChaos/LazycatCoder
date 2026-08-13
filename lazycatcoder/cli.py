@@ -119,7 +119,28 @@ def main():
             agent.messages, loaded_model, metadata = loaded
             if metadata.system_errors:
                 agent.restore_error_history(metadata.system_errors)
+            if metadata.files_touched:
+                agent.restore_touched_files(metadata.files_touched)
             console.print(f"[green]Resumed session: {args.resume}[/green]")
+
+            # Working directory safety check
+            if metadata.working_dir:
+                current_dir = os.path.normpath(os.getcwd())
+                saved_dir = os.path.normpath(metadata.working_dir)
+                if current_dir != saved_dir:
+                    console.print(f"[yellow bold]⚠ WARNING: Working directory mismatch![/yellow bold]")
+                    console.print(f"[yellow]  Session was created in: {saved_dir}[/yellow]")
+                    console.print(f"[yellow]  Current directory:       {current_dir}[/yellow]")
+                    console.print(f"[yellow]  File operations may target the wrong project.[/yellow]")
+                    try:
+                        confirm = input("Continue anyway? (y/N): ").strip().lower()
+                        if confirm not in ("y", "yes"):
+                            console.print("[dim]Resume cancelled.[/dim]")
+                            sys.exit(0)
+                    except (EOFError, KeyboardInterrupt):
+                        console.print("\n[dim]Resume cancelled.[/dim]")
+                        sys.exit(0)
+
             # Show session health status
             if metadata.system_errors:
                 error_types = [e.get("error_type", "") for e in metadata.system_errors]
@@ -180,8 +201,11 @@ def _run_once(agent: Agent, prompt: str):
     def on_tool(name, kwargs):
         console.print(f"\n[dim]> {name}({_brief(kwargs)})[/dim]")
 
-    agent.chat(prompt, on_token=on_token, on_tool=on_tool,
-               on_reasoning=on_reasoning, on_reasoning_end=on_reasoning_end)
+    try:
+        agent.chat(prompt, on_token=on_token, on_tool=on_tool,
+                   on_reasoning=on_reasoning, on_reasoning_end=on_reasoning_end)
+    finally:
+        agent.flush_session()
     print()
 
 
@@ -414,7 +438,20 @@ def _repl(agent: Agent, config: Config):
                             icon = "⚠️"
                     else:
                         icon = "✅"
-                    console.print(f"  {icon} [cyan]{d['id']}[/cyan] ({d['model']}, {d['saved_at']}) {d['summary']}")
+                    # File touch indicators
+                    file_strs = s._file_display_list()
+                    files_info = f" 📁{', '.join(file_strs[:3])}" + ("..." if len(file_strs) > 3 else "") if file_strs else ""
+                    # Usage indicators (cumulative tokens)
+                    usage = d.get("usage") or {}
+                    tokens = usage.get("total_tokens")
+                    rounds = usage.get("rounds")
+                    usage_info = ""
+                    if tokens:
+                        usage_info = f" [magenta]⚡{tokens:,} tok"
+                        if rounds:
+                            usage_info += f"/{rounds}r"
+                        usage_info += "[/magenta]"
+                    console.print(f"  {icon} [cyan]{d['id']}[/cyan] ({d['model']}, {d['saved_at']}) {d['summary']}{files_info}{usage_info}")
             continue
 
         # call the agent

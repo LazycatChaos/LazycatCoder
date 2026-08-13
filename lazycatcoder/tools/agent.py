@@ -57,6 +57,7 @@ class AgentTool(Tool):
             tools=[t for t in parent.tools if t.name != "agent"],  # no recursive agents
             max_context_tokens=parent.context.max_tokens,
             max_rounds=20,
+            workdir=parent.workdir,  # inherit parent's workdir for path normalization
             # Sub-agent starts from core tier only — does NOT inherit parent's
             # activated extended tools.  Sub-agent's activate_tool only affects
             # its own active_tool_names, not the parent's.
@@ -64,6 +65,17 @@ class AgentTool(Tool):
 
         try:
             result = sub.chat(task)
+            # Merge sub-agent's touched files into parent for session tracking
+            if hasattr(sub, '_touched_files') and hasattr(parent, '_touched_files'):
+                for abs_path, info in sub._touched_files.items():
+                    if abs_path not in parent._touched_files:
+                        parent._touched_files[abs_path] = dict(info)
+                    else:
+                        node = parent._touched_files[abs_path]
+                        node["has_read"] = node["has_read"] or info["has_read"]
+                        node["has_write"] = node["has_write"] or info["has_write"]
+                        node["has_delete"] = node["has_delete"] or info["has_delete"]
+                        node["last_touched"] = max(node["last_touched"], info["last_touched"])
             # Handle ToolResult from sub-agent
             if isinstance(result, ToolResult):
                 content = result.content
