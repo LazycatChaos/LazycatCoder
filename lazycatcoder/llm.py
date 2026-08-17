@@ -7,10 +7,14 @@ provider by changing OPENAI_BASE_URL + OPENAI_API_KEY. That's it.
 
 import json
 import time
+import logging
 import httpx
 from dataclasses import dataclass, field
+from typing import Optional
 
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
+
+logger = logging.getLogger(__name__)
 
 
 class StreamTimeoutError(Exception):
@@ -22,6 +26,51 @@ class StreamTimeoutError(Exception):
 # New Claude 4+ models reject temperature with a 400 error.
 NO_TEMPERATURE_MODELS = ("claude-4", "claude-sonnet-4", "claude-opus-4", 'claude-fable-5')
 NO_THINKING_MODELS = ("gpt-",)
+
+
+# --- Reasoning effort rules (full model-name matching) ---
+# Each rule: (exact model names, {default, valid, map, force})
+#   - default: effort used when user passes "on" without a specific level
+#   - valid:   effort values the API actually accepts (empty set = fallback,
+#              only enable_thinking is sent)
+#   - map:     user input → resolved effort ("__DISABLE__" = turn off thinking)
+#   - force:   if set, all non-disable inputs are forced to this value
+#              (e.g. kimi/kimi-k3 only supports "max")
+_REASONING_RULES: list[tuple[list[str], dict]] = [
+    # qwen3.8-max 系列: default=xhigh, valid={low,medium,xhigh}
+    (
+        ["qwen3.8-max", "qwen3.8-plus"],
+        {
+            "default": "xhigh",
+            "valid": {"low", "medium", "xhigh"},
+            "map": {"max": "xhigh", "high": "xhigh", "minimal": "low", "none": "__DISABLE__"},
+            "force": None,
+        },
+    ),
+    # DeepSeek-V4 / GLM-5+ 系列: default=high, valid={high,max}
+    (
+        ["deepseek-v4-pro", "deepseek-v4-flash",
+         "glm-5", "glm-5.1", "glm-5.2"],
+        {
+            "default": "high",
+            "valid": {"high", "max"},
+            "map": {"low": "high", "medium": "high", "xhigh": "max", "none": "__DISABLE__"},
+            "force": None,
+        },
+    ),
+    # kimi/kimi-k3 (月之暗面直供): 仅支持 max
+    (
+        ["kimi/kimi-k3"],
+        {
+            "default": "max",
+            "valid": {"max"},
+            "map": {"none": "__DISABLE__"},
+            "force": "max",
+        },
+    ),
+]
+
+_FALLBACK_RULE = {"default": None, "valid": set(), "map": {"none": "__DISABLE__"}, "force": None}
 
 
 @dataclass
@@ -66,7 +115,7 @@ class LLM:
         api_key: str,
         base_url: str | None = None,
         timeout: int = 300,
-        enable_thinking: bool = False,
+        reasoning_effort: Optional[str] = None,
         **kwargs,
     ):
         self.model = model
@@ -86,7 +135,7 @@ class LLM:
             max_retries=0,  # SDK retries disabled; we control retries below
         )
         self.extra = kwargs  # temperature, max_tokens, etc.
-        self.enable_thinking = enable_thinking
+        self.reasoning_effort = reasoning_effort
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
@@ -106,8 +155,10 @@ class LLM:
             "stream": True,
             **self._strip_unsupported_params(self.extra),
         }
-        if self.enable_thinking:
-            params['extra_body'] = {"enable_thinking": True}
+        if self.reasoning_effort is not None:
+            extra_body = self._build_reasoning_params()
+            if extra_body:
+                params['extra_body'] = extra_body
         else:
             # Explicitly disable thinking — many models (DeepSeek-R1, GLM, etc.)
             # enable thinking by default, so omitting the flag won't turn it off.
@@ -202,6 +253,52 @@ class LLM:
             reasoning="".join(reasoning_parts),
         )
 
+    def _get_reasoning_rule(self) -> dict:
+        """Find the reasoning rule for the current model (exact name match)."""
+        for names, rule in _REASONING_RULES:
+            if self.model in names:
+                return rule
+        return _FALLBACK_RULE
+
+    def _build_reasoning_params(self) -> dict | None:
+        """Build extra_body for reasoning_effort based on model rules.
+
+        - None effort or "none" → {"enable_thinking": False}
+        - Fallback model (no reasoning_effort support) → {"enable_thinking": True}
+        - Known model → {"enable_thinking": True, "reasoning_effort": resolved}
+        """
+        rule = self._get_reasoning_rule()
+        effort = self.reasoning_effort
+
+        # 关闭：None 或 "none"
+        if effort is None or effort.lower() == "none":
+            return {"enable_thinking": False}
+
+        effort_lower = effort.lower()
+
+        # 查映射表
+        resolved = rule["map"].get(effort_lower, effort_lower)
+
+        if resolved == "__DISABLE__":
+            return {"enable_thinking": False}
+
+        # force 模型（如 kimi/kimi-k3 仅支持 max）：所有非关闭输入强制映射
+        if rule.get("force"):
+            resolved = rule["force"]
+        elif rule["valid"] and resolved not in rule["valid"]:
+            # 不在合法值范围内，回退到默认
+            logger.warning(
+                f"effort '{effort}' not supported by {self.model}, "
+                f"using default '{rule['default']}'"
+            )
+            resolved = rule["default"]
+
+        # 兜底模型（不支持 reasoning_effort）→ 只发 enable_thinking
+        if not rule["valid"]:
+            return {"enable_thinking": True}
+
+        return {"enable_thinking": True, "reasoning_effort": resolved}
+
     def _strip_unsupported_params(self, params: dict) -> dict:
         """Filter out parameters not supported by the current model."""
         params = dict(params)  # don't mutate original
@@ -275,6 +372,16 @@ class LLM:
                 ):
                     print("  [LLM] enable_thinking unsupported by this model, retrying without it...")
                     params.pop("extra_body", None)
+                    continue
+                # 400 about reasoning_effort — strip it, keep enable_thinking only
+                if (
+                    e.status_code == 400
+                    and attempt == 0
+                    and "reasoning_effort" in str(e.message).lower()
+                ):
+                    print("  [LLM] reasoning_effort unsupported by this model, retrying with enable_thinking only...")
+                    if "extra_body" in params:
+                        params["extra_body"] = {"enable_thinking": True}
                     continue
                 # 5xx = server error, retry; 4xx = client error, don't
                 if e.status_code and e.status_code >= 500 and attempt < max_attempts - 1:

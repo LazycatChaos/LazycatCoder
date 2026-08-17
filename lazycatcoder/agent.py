@@ -398,6 +398,19 @@ class Agent:
                 self._total_tokens_input += resp.prompt_tokens
                 self._total_tokens_output += resp.completion_tokens
 
+                # Feed exact prompt_tokens and completion_tokens back to
+                # ContextManager for hybrid estimation.  msg_count = messages
+                # at API call time (before appending the assistant response).
+                # completion_tokens includes reasoning, but reasoning is not
+                # sent back to the API — ContextManager subtracts it.
+                if resp.prompt_tokens > 0:
+                    self.context.update_exact_tokens(
+                        resp.prompt_tokens,
+                        len(self.messages),
+                        completion_tokens=resp.completion_tokens,
+                        reasoning=resp.reasoning,
+                    )
+
                 # Log LLM parse errors (malformed tool call JSON from model)
                 for pe in resp.parse_errors:
                     self._log_error("llm_parse_error", f"Tool '{pe['tool']}': {pe['error']}", tool=pe["tool"], arguments={"raw_args": pe.get("raw_args", "")})

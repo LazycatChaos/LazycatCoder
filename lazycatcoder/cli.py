@@ -93,7 +93,7 @@ def main():
         timeout=config.timeout,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
-        enable_thinking=config.enable_thinking,
+        reasoning_effort=config.reasoning_effort,
     )
     
     # Determine working directory: CLI arg > current directory
@@ -218,7 +218,7 @@ def _repl(agent: Agent, config: Config):
         f"Model: [cyan]{config.model}[/cyan]"
         + (f"  Base: [dim]{config.base_url}[/dim]" if config.base_url else "")
         + f"  Timeout: [dim]{config.timeout}s[/dim]"
-        + (f"  Thinking: [dim]on[/dim]" if config.enable_thinking else "")
+        + (f"  Thinking: [dim]{config.reasoning_effort or 'off'}[/dim]" if config.reasoning_effort else "")
         + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",
         border_style="blue",
     ))
@@ -266,11 +266,42 @@ def _repl(agent: Agent, config: Config):
             status = "on" if config.debug else "off"
             console.print(f"Debug mode [bold]{status}[/bold]")
             continue
-        if user_input == "/think":
-            config.enable_thinking = not config.enable_thinking
-            agent.llm.enable_thinking = config.enable_thinking
-            status = "on" if config.enable_thinking else "off"
-            console.print(f"Deep thinking [bold]{status}[/bold]")
+        if user_input == "/think" or user_input.startswith("/think "):
+            parts = user_input.split(None, 1)
+            arg = parts[1].strip().lower() if len(parts) > 1 else None
+            valid_efforts = {"off", "on", "none", "low", "medium", "high", "max", "xhigh", "minimal"}
+
+            if arg is None:
+                # 无参数：显示当前状态并 toggle
+                if config.reasoning_effort is not None:
+                    # 当前开启 → 关闭
+                    config.reasoning_effort = None
+                    agent.llm.reasoning_effort = None
+                    console.print(f"Deep thinking [bold]off[/bold]")
+                else:
+                    # 当前关闭 → 开启（用模型默认 effort）
+                    rule = agent.llm._get_reasoning_rule()
+                    default_effort = rule.get("default") or "on"
+                    config.reasoning_effort = default_effort
+                    agent.llm.reasoning_effort = default_effort
+                    console.print(f"Deep thinking [bold]on[/bold] (effort: {default_effort})")
+            elif arg == "off":
+                config.reasoning_effort = None
+                agent.llm.reasoning_effort = None
+                console.print(f"Deep thinking [bold]off[/bold]")
+            elif arg == "on":
+                rule = agent.llm._get_reasoning_rule()
+                default_effort = rule.get("default") or "on"
+                config.reasoning_effort = default_effort
+                agent.llm.reasoning_effort = default_effort
+                console.print(f"Deep thinking [bold]on[/bold] (effort: {default_effort})")
+            elif arg in valid_efforts:
+                config.reasoning_effort = arg
+                agent.llm.reasoning_effort = arg
+                console.print(f"Deep thinking [bold]on[/bold] (effort: {arg})")
+            else:
+                console.print(f"[red]Unknown effort: {arg}[/red]")
+                console.print(f"[dim]Valid: on, off, none, low, medium, high, max, xhigh, minimal[/dim]")
             continue
         if user_input == "/clear_thoughts":
             count = 0
@@ -488,7 +519,7 @@ def _show_help():
         "  /model <name>  Switch model mid-conversation\n"
         "  /timeout <sec> Set request timeout (default: 120s)\n"
         "  /debug         Toggle debug mode\n"
-        "  /think          Toggle deep thinking (reasoning display)\n"
+        "  /think [effort]  Toggle or set deep thinking (on/off/low/medium/high/max/xhigh)\n"
         "  /clear_thoughts  Clear stored reasoning from all messages (save space)\n"
         "  /workdir [dir] Show or change working directory\n"
         "  /venv [path]   Show or set virtual environment\n"

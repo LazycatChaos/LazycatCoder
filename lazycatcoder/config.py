@@ -17,7 +17,7 @@ class Config:
     temperature: float = 0.0
     debug: bool = False
     venv_path: Optional[str] = None  # 虚拟环境路径（可选，设置后 bash 工具会自动激活）
-    enable_thinking: bool = False  # 深度思考（reasoning）开关
+    reasoning_effort: Optional[str] = None  # None=关闭, "high"/"max"/"xhigh"/"medium"/"low"/"none"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -38,7 +38,10 @@ class Config:
             max_context_tokens=int(os.getenv("LAZYCATCODER_MAX_CONTEXT", "200000")),
             debug=os.getenv("LAZYCATCODER_DEBUG", "").lower() in ("1", "true", "yes", "on"),
             venv_path=os.getenv("LAZYCATCODER_VENV") or None,
-            enable_thinking=os.getenv("LAZYCATCODER_THINKING", "").lower() in ("1", "true", "yes", "on"),
+            reasoning_effort=(
+                os.getenv("LAZYCATCODER_REASONING_EFFORT")
+                or ("high" if os.getenv("LAZYCATCODER_THINKING", "").lower() in ("1", "true", "yes", "on") else None)
+            ),
         )
 
     def resolve_venv(self, workdir: Optional[str] = None) -> Optional[str]:

@@ -17,6 +17,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from .message import AgentMessage
+
 if TYPE_CHECKING:
     from .llm import LLM
 
@@ -127,6 +129,21 @@ class ContextManager:
         self._autocompact_at = int(max_tokens * 0.40)  # 40% -> proactive background compact
         self._last_autocompact_tokens = 0  # Track to avoid redundant compaction
 
+        # Hybrid token estimation: cache the last exact prompt_tokens and
+        # completion_tokens returned by the LLM API along with the message
+        # count at that point.  This lets token_usage() compute
+        #   exact_base + exact_assistant + estimated_delta
+        # instead of re-estimating the entire conversation every time.
+        #
+        # prompt_tokens     = exact token count of all messages sent to API
+        # completion_tokens = exact token count of model output (content +
+        #   tool_calls + reasoning).  Since reasoning is NOT sent back to the
+        #   API in subsequent rounds, we subtract estimated reasoning tokens
+        #   to get the assistant message's real context footprint.
+        self._last_exact_prompt_tokens: int = 0
+        self._last_exact_msg_count: int = 0
+        self._last_exact_assistant_tokens: int = 0
+
         # Soft-delete side-store.  Messages compressed out of the active list
         # are archived here (same AgentMessage type as the active list) rather
         # than destroyed, so history stays recoverable within the process.
@@ -135,8 +152,92 @@ class ContextManager:
         self._archived_tokens: int = 0
         self._archive_batch_tokens: dict[int, int] = {}  # batch_id -> token count
 
+    def update_exact_tokens(
+        self,
+        prompt_tokens: int,
+        msg_count: int,
+        completion_tokens: int = 0,
+        reasoning: str = "",
+    ) -> None:
+        """Cache exact token counts from the LLM API response.
+
+        Called after every LLM round.  ``msg_count`` is the number of messages
+        that were in the conversation *when the API call was made* (i.e. before
+        the assistant response was appended).
+
+        prompt_tokens is the exact input token count — it becomes the base
+        for hybrid estimation.
+
+        completion_tokens includes content + tool_calls + reasoning, but
+        reasoning is NOT sent back to the API.  We subtract estimated reasoning
+        tokens to get the assistant message's real context footprint, which
+        is more accurate than re-estimating the assistant message from scratch.
+        """
+        if prompt_tokens > 0 and msg_count >= 0:
+            self._last_exact_prompt_tokens = prompt_tokens
+            self._last_exact_msg_count = msg_count
+            if completion_tokens > 0:
+                reasoning_tokens = _approx_tokens(reasoning, self.model) if reasoning else 0
+                # Clamp to 0 — defensive against APIs that report
+                # completion_tokens < reasoning estimate (rare, but possible
+                # if reasoning was truncated or the estimate is off).
+                assistant_tokens = max(0, completion_tokens - reasoning_tokens)
+                self._last_exact_assistant_tokens = assistant_tokens
+            else:
+                self._last_exact_assistant_tokens = 0
+
+    def _invalidate_exact_tokens(self) -> None:
+        """Invalidate the cached exact token count.
+
+        Called after compression layers rebuild the message list (snip,
+        summarize, collapse) because the exact base no longer corresponds
+        to the current messages.
+        """
+        self._last_exact_prompt_tokens = 0
+        self._last_exact_msg_count = 0
+        self._last_exact_assistant_tokens = 0
+
     def token_usage(self, messages: list) -> int:
-        """Return current estimated token count."""
+        """Return current token count using hybrid estimation.
+
+        If we have cached exact values from the last API call:
+          exact_prompt_tokens  (base for all messages at API call time)
+        + exact_assistant_tokens  (completion_tokens - reasoning, for the
+          assistant message that was generated but not yet in messages at
+          API call time)
+        + estimated_delta  (for any messages added after the assistant message,
+          e.g. tool results, next user message)
+
+        Falls back to full estimation if no exact base is available.
+        """
+        n = len(messages)
+        if self._last_exact_prompt_tokens > 0 and n >= self._last_exact_msg_count:
+            delta_msgs = messages[self._last_exact_msg_count:]
+            if not delta_msgs:
+                # No new messages — just the exact prompt_tokens.
+                # If assistant_tokens is set, the assistant message has been
+                # appended (it wasn't counted in prompt_tokens).
+                return self._last_exact_prompt_tokens + self._last_exact_assistant_tokens
+
+            # Check if the first delta message is the assistant message we
+            # have exact completion_tokens for.  If so, use the exact value
+            # instead of estimating it.
+            first = delta_msgs[0]
+            first_role = _msg_role(first)
+            exact_part = 0
+            remaining = delta_msgs
+
+            if (
+                self._last_exact_assistant_tokens > 0
+                and first_role == "assistant"
+            ):
+                # The assistant message is the first new message.  Use exact
+                # token count for it, estimate the rest.
+                exact_part = self._last_exact_assistant_tokens
+                remaining = delta_msgs[1:]
+
+            estimated = estimate_tokens(remaining, self.model)
+            return self._last_exact_prompt_tokens + exact_part + estimated
         return estimate_tokens(messages, self.model)
 
     def should_autocompact(self, current_tokens: int) -> bool:
@@ -155,24 +256,28 @@ class ContextManager:
 
     def maybe_compress(self, messages: list, llm: LLM | None = None) -> bool:
         """Apply compression layers as needed. Returns True if any compression happened."""
-        current = estimate_tokens(messages, self.model)
+        current = self.token_usage(messages)
         compressed = False
 
         # Layer 1: snip verbose tool outputs
         if current > self._snip_at:
             if self._snip_tool_outputs(messages):
                 compressed = True
-                current = estimate_tokens(messages, self.model)
+                # Snipping modifies messages in-place; exact base is stale.
+                self._invalidate_exact_tokens()
+                current = self.token_usage(messages)
 
         # Layer 2: LLM-powered summarization of old turns
         if current > self._summarize_at and len(messages) > 10:
             if self._summarize_old(messages, llm, keep_recent=8):
                 compressed = True
-                current = estimate_tokens(messages, self.model)
+                self._invalidate_exact_tokens()
+                current = self.token_usage(messages)
 
         # Layer 3: hard collapse - last resort
         if current > self._collapse_at and len(messages) > 4:
             self._hard_collapse(messages, llm)
+            self._invalidate_exact_tokens()
             compressed = True
 
         return compressed
@@ -237,6 +342,7 @@ class ContextManager:
         )
         messages[:] = [summary_msg, ack_msg] + tail
         _link_chain(messages)
+        self._invalidate_exact_tokens()
         
         return True
 
