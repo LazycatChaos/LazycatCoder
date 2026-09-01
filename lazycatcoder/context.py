@@ -544,6 +544,7 @@ class ContextManager:
                         },
                         {"role": "user", "content": flat[:15000]},
                     ],
+                    purpose="compress",
                 )
                 summary = resp.content
                 # Ensure file operations are included even if LLM omitted them

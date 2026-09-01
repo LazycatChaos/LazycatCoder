@@ -147,8 +147,16 @@ class LLM:
         on_reasoning=None,
         on_reasoning_end=None,
         debug: bool = False,
+        purpose: str = "",
     ) -> LLMResponse:
-        """Send messages, stream back response, handle tool calls."""
+        """Send messages, stream back response, handle tool calls.
+
+        Args:
+            purpose: Optional label for the log prefix (e.g. "compress").
+                     When set, the "Sending request" log is prefixed with
+                     [purpose] so users can distinguish compression calls
+                     from main agent-loop calls.
+        """
         params: dict = {
             "model": self.model,
             "messages": messages,
@@ -167,7 +175,8 @@ class LLM:
             params["tools"] = tools
 
         # Log before sending request to avoid confusion during long waits
-        print(f"Sending request to {self.model}...")
+        prefix = f"[{purpose}] " if purpose else ""
+        print(f"{prefix}Sending request to {self.model}...")
 
         # Phase 1: Create stream (retriable)
         raw_stream = self._create_stream_with_retry(params)
