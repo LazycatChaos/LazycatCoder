@@ -58,6 +58,17 @@ _REASONING_RULES: list[tuple[list[str], dict]] = [
             "force": None,
         },
     ),
+    # glm-5.3: 不支持关闭深度思考(enable_thinking=False 会报错),
+    # 用 reasoning_effort="low" 模拟关闭思考的效果
+    (
+        ["glm-5.3", "glm-5.3-flash"],
+        {
+            "default": "high",
+            "valid": {"low", "high", "max"},
+            "map": {"medium": "high", "xhigh": "max", "none": "low"},
+            "force": None,
+        },
+    ),
     # kimi/kimi-k3 (月之暗面直供): 仅支持 max
     (
         ["kimi/kimi-k3"],
@@ -163,14 +174,12 @@ class LLM:
             "stream": True,
             **self._strip_unsupported_params(self.extra),
         }
-        if self.reasoning_effort is not None:
-            extra_body = self._build_reasoning_params()
-            if extra_body:
-                params['extra_body'] = extra_body
-        else:
-            # Explicitly disable thinking — many models (DeepSeek-R1, GLM, etc.)
-            # enable thinking by default, so omitting the flag won't turn it off.
-            params['extra_body'] = {"enable_thinking": False}
+        # Always build reasoning params — _build_reasoning_params handles
+        # None/"none" (disable) and model-specific fallbacks (e.g. glm-5.3
+        # can't disable thinking, uses reasoning_effort="low" instead).
+        extra_body = self._build_reasoning_params()
+        if extra_body:
+            params['extra_body'] = extra_body
         if tools:
             params["tools"] = tools
 
@@ -281,6 +290,12 @@ class LLM:
 
         # 关闭：None 或 "none"
         if effort is None or effort.lower() == "none":
+            # glm-5.3 不支持 enable_thinking=False, map["none"]="low" 模拟关闭
+            if "none" in rule["map"] and rule["map"]["none"] != "__DISABLE__":
+                resolved = rule["map"]["none"]
+                if rule["valid"] and resolved not in rule["valid"]:
+                    resolved = rule["default"]
+                return {"enable_thinking": True, "reasoning_effort": resolved}
             return {"enable_thinking": False}
 
         effort_lower = effort.lower()
